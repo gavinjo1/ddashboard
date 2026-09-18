@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machine Report</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <span class="brand-name">Machine Report</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-tab="production" role="tab">Production</button>
+    <button class="tab" data-tab="quality" role="tab">Quality</button>
+    <button class="tab" data-tab="import" role="tab">Import</button>
+  </nav>
+  <div class="topbar-right">
+    <div class="topbar-meta" id="dataRange"></div>
+
+    <div class="gsearch" id="gsearch">
+      <input type="search" id="gsInput" class="gsearch-input" autocomplete="off"
+             placeholder="Search customer, order, fabric, machine…"
+             aria-label="Search everything" aria-expanded="false">
+      <div class="gsearch-panel" id="gsPanel" hidden>
+        <p class="gsearch-status" id="gsStatus"></p>
+        <div class="gsearch-list" id="gsList"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ------------------------------------------------------------------ -->
+<section class="filters" id="filterBar">
+  <button class="filters-toggle" id="filtersToggle" aria-expanded="false" aria-controls="filterFields">
+    <span class="filters-toggle-label">Filters</span>
+    <span class="filters-summary" id="filtersSummary"></span>
+    <span class="caret">▾</span>
+  </button>
+
+  <div class="filter-fields" id="filterFields">
+  <label class="field">
+    <span>From</span>
+    <input type="date" id="fFrom">
+  </label>
+  <label class="field">
+    <span>To</span>
+    <input type="date" id="fTo">
+  </label>
+  <div class="field" data-pick="shift"><span>Shift</span><div class="picker" id="pShift"></div></div>
+  <div class="field" data-pick="group"><span>Machine group</span><div class="picker" id="pGroup"></div></div>
+  <div class="field" data-pick="type"><span>Machine type</span><div class="picker" id="pType"></div></div>
+  <div class="field" data-pick="fabric"><span>Fabric</span><div class="picker" id="pFabric"></div></div>
+  <div class="field" data-pick="mo"><span>Order</span><div class="picker" id="pMo"></div></div>
+  <div class="filter-actions">
+    <button class="btn btn-quiet" id="btnReset">Reset</button>
+    <a class="btn btn-quiet" id="btnExport" href="#" download>Export CSV</a>
+  </div>
+  </div>
+</section>
+
+<!-- ------------------------------------------------------------------ -->
+<main>
+
+<div class="panel is-active" id="panel-production">
+  <div class="stats" id="stats"></div>
+
+  <section class="card" id="orderInfo" hidden>
+    <div class="card-head">
+      <h2>Order detail</h2>
+      <p class="card-sub" id="orderInfoSub"></p>
+    </div>
+    <div class="table-wrap">
+      <table class="data" id="orderInfoTable">
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Customer</th>
+            <th>Fabric</th>
+            <th class="num">Pick</th>
+            <th class="num">Total order (m)</th>
+            <th class="num">Akumulasi (m)</th>
+            <th class="num">Sisa order (m)</th>
+            <th>Progress</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="orderHistory" hidden>
+      <div class="card-head" style="margin-top:22px">
+        <h2 id="orderHistoryTitle">Day by day</h2>
+        <p class="card-sub">Akumulasi as each daily sheet recorded it, against the order quantity.</p>
+      </div>
+      <div class="chart" id="chartOrderHistory"></div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table class="data" id="orderHistoryTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th class="num">Output that day (m)</th>
+              <th class="num">Akumulasi (m)</th>
+              <th class="num">Sisa order (m)</th>
+              <th class="num">Progress</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Daily output</h2>
+        <p class="card-sub">Metres woven per day, all machines in the current filter.</p>
+      </figcaption>
+      <div class="chart" id="chartTrend"></div>
+    </figure>
+  </div>
+
+  <div class="grid grid-3">
+    <figure class="card">
+      <figcaption class="card-head card-head-row">
+        <div>
+          <h2 id="chartGroupTitle">Output by</h2>
+          <p class="card-sub" id="chartGroupNote"></p>
+        </div>
+        <div class="segmented" role="group" aria-label="Break output down by">
+          <button class="seg is-active" data-dim="group">Group</button>
+          <button class="seg" data-dim="type">Type</button>
+          <button class="seg" data-dim="fabric">Fabric</button>
+        </div>
+      </figcaption>
+      <div class="chart" id="chartGroup"></div>
+    </figure>
+    <figure class="card">
+      <figcaption class="card-head"><h2>By shift</h2></figcaption>
+      <div class="chart" id="chartShift"></div>
+    </figure>
+    <figure class="card">
+      <figcaption class="card-head"><h2>Stoppage reasons</h2></figcaption>
+      <div class="chart" id="chartStop"></div>
+    </figure>
+  </div>
+
+  <section class="card">
+    <div class="card-head card-head-row">
+      <div>
+        <h2>Machines</h2>
+        <p class="card-sub">Select a row to see every shift for that machine.</p>
+      </div>
+      <input type="search" id="mcSearch" class="search" placeholder="Filter by machine, type or group…">
+    </div>
+    <div class="table-wrap">
+      <table class="data" id="machineTable">
+        <thead>
+          <tr>
+            <th class="sortable" data-sort="machine">Machine</th>
+            <th>Type</th>
+            <th>Group</th>
+            <th class="num sortable is-sorted-desc" data-sort="produksi">Output (m)</th>
+            <th class="num sortable" data-sort="avg_day">Avg / day</th>
+            <th class="num sortable" data-sort="rpm">Avg RPM</th>
+            <th class="num sortable" data-sort="stoppages">Stops</th>
+            <th class="num">Idle shifts</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<div class="panel" id="panel-quality">
+  <div class="stats" id="qStats"></div>
+
+  <div class="grid grid-2">
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Inspected metres by grade</h2>
+        <p class="card-sub">Grades are reported per order, so machine filters do not apply here.</p>
+      </figcaption>
+      <div class="chart" id="chartQuality"></div>
+    </figure>
+    <section class="card">
+      <div class="card-head"><h2>By fabric</h2></div>
+      <div class="table-wrap">
+        <table class="data" id="qFabricTable">
+          <thead>
+            <tr><th>Fabric</th><th class="num">Inspected</th><th class="num">Grade A</th><th class="num">Defect rate</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>Daily grade detail</h2></div>
+    <div class="table-wrap">
+      <table class="data" id="qDailyTable">
+        <thead>
+          <tr><th>Date</th><th class="num">A</th><th class="num">B</th><th class="num">BS</th><th class="num">RK</th><th class="num">Total</th><th class="num">Defect rate</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<div class="panel" id="panel-import">
+  <div class="grid grid-even">
+    <section class="card">
+      <div class="card-head">
+        <h2>Add a report</h2>
+        <p class="card-sub">Excel, CSV, TSV, ODS or JSON. Every sheet that looks like a
+          daily report or a grade report is read; the rest are ignored.</p>
+      </div>
+
+      <div class="drop" id="drop">
+        <input type="file" id="fileInput" accept=".xlsx,.xlsm,.xlsb,.xls,.ods,.csv,.tsv,.txt,.json" hidden>
+        <p class="drop-main">Drop a file here, or <button class="linkish" id="browse">browse</button></p>
+        <p class="drop-sub">Rows are matched on date + shift + machine, so re-importing a
+          corrected file updates those rows instead of duplicating them.</p>
+      </div>
+
+      <div id="importResult"></div>
+
+      <details class="note">
+        <summary>Which columns are needed</summary>
+        <p><strong>Daily report sheet</strong> — must have <code>TGL</code>, <code>NO MC</code> and
+          <code>PRODUKSI</code>. Also read when present: <code>SHIFT</code>, <code>MO</code>,
+          <code>KODE KAIN</code>, <code>TYPE MC</code>, <code>KELOMPOK MESIN</code>,
+          <code>JML KAIN</code>, <code>RPM</code>, <code>RPM TARGET</code>,
+          <code>HIT RPM</code>, <code>KETIK RPM</code>, <code>KETIK PROD</code>, <code>KET BB</code>.</p>
+        <p><strong>Grade sheet</strong> — must have <code>TGL</code>, <code>MO</code> and
+          <code>A</code>. Also read: <code>KODE</code>, <code>B</code>, <code>BS</code>,
+          <code>RK</code>, <code>TOTAL</code>.</p>
+        <p>Header spelling is matched loosely, so <code>Kelompok Mesin</code> and
+          <code>KELOMPOK_MESIN</code> both work. Rows without a real date — the
+          <code>SALDO</code> opening balances — are skipped.</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Recent imports</h2></div>
+      <div class="table-wrap">
+        <table class="data" id="importLog">
+          <thead>
+            <tr><th>When</th><th>File</th><th>Sheet</th><th class="num">Written</th><th class="num">Skipped</th><th>Status</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+</main>
+
+<div class="tooltip" id="tooltip" hidden></div>
+
+<dialog class="drawer" id="drawer">
+  <div class="drawer-head">
+    <h2 id="drawerTitle"></h2>
+    <button class="btn btn-quiet" id="drawerClose">Close</button>
+  </div>
+  <div class="table-wrap">
+    <table class="data" id="drawerTable">
+      <thead>
+        <tr><th>Date</th><th>Shift</th><th>Order</th><th>Fabric</th><th class="num">Pick</th><th class="num">RPM</th><th class="num">Target</th><th class="num">Output (m)</th><th>Note</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

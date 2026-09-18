@@ -1,0 +1,711 @@
+/* ------------------------------------------------------------------ *
+ * Tokens
+ * Light only, on purpose: this runs on mill office screens and is read
+ * next to printed reports. Values are the validated reference palette.
+ * ------------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+
+  --plane:       #f7f7f5;
+  --surface:     #ffffff;
+  --surface-sub: #fafaf8;
+
+  --ink:         #0b0b0b;
+  --ink-2:       #52514e;
+  --ink-muted:   #898781;
+
+  --line:        rgba(11, 11, 11, .10);
+  --line-soft:   #ebebe6;
+  --grid:        #e1e0d9;
+  --axis:        #c3c2b7;
+
+  --series-1:    #2a78d6;   /* the one series colour: magnitude */
+  --series-1-fill: rgba(42, 120, 214, .12);
+
+  --grade-a:     #1c5cab;
+  --grade-b:     #5598e7;
+  --grade-bs:    #d03b3b;
+  --grade-rk:    #ec835a;
+
+  --good:        #0ca30c;
+  --warning:     #fab219;
+  --critical:    #d03b3b;
+  --good-text:   #006300;
+
+  --radius:      6px;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--plane);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+}
+
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.005em; }
+
+button, input, select { font: inherit; color: inherit; }
+
+/* ------------------------------------------------------------------ *
+ * Top bar
+ * ------------------------------------------------------------------ */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 52px;
+  padding: 0 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark {
+  width: 9px; height: 9px; border-radius: 2px;
+  background: var(--series-1);
+}
+.brand-name { font-weight: 600; letter-spacing: -.01em; }
+
+.tabs { display: flex; gap: 2px; }
+.tab {
+  padding: 5px 11px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.tab:hover { background: var(--surface-sub); color: var(--ink); }
+.tab.is-active { background: #eef3fb; color: #1c5cab; font-weight: 500; }
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-left: auto;
+  min-width: 0;
+}
+.topbar-meta {
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- search over everything ---- */
+.gsearch { position: relative; }
+.gsearch-input {
+  width: 260px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.gsearch-input::placeholder { color: var(--ink-muted); }
+.gsearch-input:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
+
+.gsearch-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 440px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(11, 11, 11, .14);
+}
+.gsearch-panel[hidden] { display: none; }
+
+.gsearch-status {
+  margin: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--ink-muted);
+  font-size: 12.5px;
+}
+.gsearch-list { overflow-y: auto; padding: 4px; }
+
+.gs-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.gs-row:hover, .gs-row:focus-visible { background: var(--surface-sub); outline: none; }
+.gs-main { flex: 1; min-width: 0; }
+/* Both lines must be blocks: text-overflow does nothing on an inline span, so
+   the subtitle would run on underneath the match tag instead of clipping. */
+.gs-main > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-mo { font-weight: 600; font-variant-numeric: tabular-nums; }
+.gs-cust { margin-left: 8px; color: var(--ink-2); }
+.gs-sub {
+  margin-top: 2px;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+}
+.gs-right { text-align: right; white-space: nowrap; }
+.gs-prod { font-variant-numeric: tabular-nums; font-size: 13px; }
+.gs-tag {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border-radius: 20px;
+  background: #eef3fb;
+  color: #1c5cab;
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Filter bar
+ * ------------------------------------------------------------------ */
+.filters {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.filters.is-hidden { display: none; }
+
+.filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+/* Replaced by a single button on small screens; see the media query below. */
+.filters-toggle { display: none; }
+
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field > span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.field input[type="date"] {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+.field input[type="date"]:focus-visible,
+.picker-btn:focus-visible,
+.search:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
+
+.filter-actions { display: flex; gap: 8px; margin-left: auto; }
+
+.btn {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink-2);
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-sub); color: var(--ink); }
+
+/* ---- multi-select picker ---- */
+.picker { position: relative; }
+.picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  min-width: 132px;
+  max-width: 210px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+}
+.picker-btn .val { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-btn .val.is-empty { color: var(--ink-muted); }
+.picker-btn .caret { color: var(--ink-muted); font-size: 10px; }
+.picker.is-set .picker-btn { border-color: var(--series-1); }
+
+.picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  /* Sized by its longest option, so "AJL TOYOTA 2 810 | AJL 2 AIR TUCKER"
+     stays on one line, with a ceiling so it never runs off a narrow screen. */
+  width: max-content;
+  min-width: 240px;
+  max-width: min(400px, 88vw);
+  max-height: 340px;
+  display: none;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(11, 11, 11, .10);
+}
+.picker.is-open .picker-menu { display: flex; }
+
+.picker-menu .search { margin: 8px; }
+.picker-list { overflow-y: auto; padding: 0 4px 6px; }
+.picker-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.picker-list label:hover { background: var(--surface-sub); }
+.picker-list input { accent-color: var(--series-1); margin: 0; flex: none; }
+.picker-list .opt { min-width: 0; line-height: 1.3; white-space: nowrap; }
+.picker-list .opt small {
+  display: block;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+}
+.picker-foot {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.picker-foot button {
+  border: 0; background: none; padding: 0;
+  color: var(--series-1); cursor: pointer;
+}
+
+.search {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.card-head-row .search { width: 200px; }
+
+/* ------------------------------------------------------------------ *
+ * Layout
+ * ------------------------------------------------------------------ */
+main { padding: 16px 20px 40px; }
+.panel { display: none; }
+.panel.is-active { display: block; }
+
+.grid { display: grid; gap: 14px; margin-bottom: 14px; }
+
+/* Grid and flex items refuse to shrink below their content by default. A chart
+   measured once at a wide size then pins its card open and never shrinks back,
+   which pushes the whole page sideways on a phone. */
+.grid > *, .stats > * { min-width: 0; }
+.grid-2 { grid-template-columns: 1.55fr 1fr; }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+.grid-even { grid-template-columns: 1fr 1fr; }
+
+/* Laptop: three across is too tight, two reads better. */
+@media (max-width: 1180px) {
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 1000px) {
+  .grid-2, .grid-even { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* Tablet and phone: the header wraps and the filters fold away behind a
+   button. Stacked, they run to about 500px — half a phone screen of controls
+   before any data. */
+@media (max-width: 860px) {
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    padding: 10px 16px;
+  }
+  .topbar-right { margin-left: 0; flex-basis: 100%; flex-direction: column-reverse; align-items: stretch; gap: 8px; }
+  .topbar-meta { white-space: normal; }
+  .gsearch-input { width: 100%; }
+  .gsearch-panel { width: 100%; right: auto; left: 0; max-height: 60vh; }
+
+  .filters { padding: 10px 16px; }
+
+  .filters-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 34px;
+    padding: 0 11px;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+    text-align: left;
+  }
+  .filters-toggle-label { font-weight: 500; }
+  .filters-summary {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .filters.is-open .filters-toggle { margin-bottom: 12px; }
+  .filters.is-open .filters-toggle .caret { transform: rotate(180deg); }
+
+  .filter-fields { display: none; }
+  .filters.is-open .filter-fields { display: flex; }
+
+  .field, .picker, .picker-btn { width: 100%; max-width: none; }
+  .picker-menu { width: 100%; min-width: 0; max-width: none; }
+  .filter-actions { margin-left: 0; width: 100%; }
+  .filter-actions .btn { flex: 1; justify-content: center; }
+
+  main { padding: 14px 16px 32px; }
+  .card { padding: 14px; }
+  .card-head-row { flex-direction: column; align-items: stretch; gap: 10px; }
+  .card-head-row .search { width: 100%; }
+  .segmented { align-self: flex-start; }
+  .table-wrap { margin: 0 -14px -14px; }
+
+  /* Wide tables scroll sideways rather than wrap: a wrapped "AJL TOYOTA 910 |
+     AJL 3 AIR TUCKER" turns every row into three lines and the table becomes
+     unreadable. Pin the first column so the row keeps its name while scrolling. */
+  table.data th, table.data td { white-space: nowrap; }
+  table.data td:first-child,
+  table.data th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: var(--surface);
+  }
+  table.data th:first-child { z-index: 3; background: var(--surface-sub); }
+  table.data tbody tr:hover td:first-child { background: var(--surface-sub); }
+  .table-wrap::after {
+    content: "";
+    position: sticky;
+    left: 0;
+    display: block;
+    height: 0;
+  }
+
+  .stats { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .stat-value { font-size: 22px; }
+  .drawer { width: 96vw; }
+}
+
+@media (max-width: 420px) {
+  main { padding: 12px 12px 28px; }
+  .card { padding: 12px; }
+  .table-wrap { margin: 0 -12px -12px; }
+  .topbar, .filters { padding-left: 12px; padding-right: 12px; }
+}
+
+.card {
+  margin: 0;
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.card-head { margin: 0 0 14px; }
+.card-head h2 { font-size: 14px; }
+.card-sub { margin: 3px 0 0; color: var(--ink-muted); font-size: 12.5px; }
+.card-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface-sub);
+}
+.seg {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.seg:hover { color: var(--ink); }
+.seg.is-active { background: var(--surface); color: var(--ink); font-weight: 500; }
+
+/* ------------------------------------------------------------------ *
+ * Stat tiles — the headline numbers are not charts
+ * ------------------------------------------------------------------ */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.stat {
+  padding: 13px 15px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.stat-label {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.stat-value {
+  margin-top: 5px;
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+}
+.stat-value .unit { margin-left: 3px; font-size: 13px; font-weight: 500; color: var(--ink-muted); }
+.stat-foot { margin-top: 3px; color: var(--ink-2); font-size: 12.5px; }
+.stat-foot .up { color: var(--good-text); }
+.stat-foot .down { color: var(--critical); }
+
+/* ------------------------------------------------------------------ *
+ * Charts
+ * ------------------------------------------------------------------ */
+.chart { min-width: 0; }
+.chart svg { display: block; width: 100%; max-width: 100%; height: auto; }
+.chart .empty { padding: 28px 0; color: var(--ink-muted); text-align: center; }
+
+.axis-label { fill: var(--ink-muted); font-size: 11px; }
+.axis-label.num { font-variant-numeric: tabular-nums; }
+.grid-line { stroke: var(--grid); stroke-width: 1; }
+.axis-line { stroke: var(--axis); stroke-width: 1; }
+.point-label { fill: var(--ink); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.bar-value { fill: var(--ink-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.bar { fill: var(--series-1); }
+.bar-hit { fill: transparent; cursor: default; }
+.bar-row:hover .bar { fill: #1c5cab; }
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i {
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.legend .n { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 500; }
+
+.tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: 250px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(11, 11, 11, .12);
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.tooltip[hidden] { display: none; }
+.tooltip b { display: block; margin-bottom: 4px; font-weight: 600; }
+.tooltip .row { display: flex; justify-content: space-between; gap: 18px; color: var(--ink-2); }
+.tooltip .row span:last-child { color: var(--ink); font-variant-numeric: tabular-nums; }
+.tooltip .swatch {
+  display: inline-block; width: 8px; height: 8px;
+  margin-right: 6px; border-radius: 2px; background: currentColor;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tables
+ * ------------------------------------------------------------------ */
+.table-wrap { max-height: 560px; overflow: auto; margin: 0 -16px -16px; }
+.drawer .table-wrap { margin: 0; max-height: 65vh; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+table.data th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 12px;
+  background: var(--surface-sub);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-2);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+table.data td.nowrap { white-space: nowrap; }
+table.data td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+table.data tbody tr:last-child td { border-bottom: 0; }
+table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tbody tr:hover { background: var(--surface-sub); }
+table.data tbody tr[tabindex] { cursor: pointer; }
+
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--ink); }
+th.sortable::after { content: ""; display: inline-block; width: 12px; }
+th.is-sorted-asc::after  { content: " ↑"; width: auto; }
+th.is-sorted-desc::after { content: " ↓"; width: auto; }
+
+.mc-name { font-weight: 500; }
+.muted { color: var(--ink-muted); }
+
+/* an inline bar reads as a column of magnitudes, not decoration */
+.cell-bar {
+  display: flex; align-items: center; justify-content: flex-end; gap: 9px;
+}
+.cell-bar i {
+  height: 6px; border-radius: 2px;
+  background: var(--series-1); opacity: .85;
+}
+
+.dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+.dot-good { background: var(--good); }
+.dot-warning { background: var(--warning); }
+.dot-critical { background: var(--critical); }
+
+/* a slim track, so the column reads as progress without shouting */
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 150px;
+}
+.progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.progress-fill { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+.progress-fill.is-over { background: var(--warning); }
+.progress-pct { font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; }
+
+/* ------------------------------------------------------------------ *
+ * Import
+ * ------------------------------------------------------------------ */
+.drop {
+  padding: 30px 20px;
+  border: 1px dashed var(--axis);
+  border-radius: 8px;
+  background: var(--surface-sub);
+  text-align: center;
+}
+.drop.is-over { border-color: var(--series-1); background: #f2f7fd; }
+.drop.is-busy { opacity: .6; pointer-events: none; }
+.drop-main { margin: 0; }
+.drop-sub { margin: 7px auto 0; max-width: 45ch; color: var(--ink-muted); font-size: 12.5px; }
+
+.linkish {
+  border: 0; padding: 0; background: none;
+  color: var(--series-1); text-decoration: underline; cursor: pointer;
+}
+
+.result { margin-top: 14px; padding: 12px 14px; border-radius: var(--radius); font-size: 13px; }
+.result-ok   { background: #f1f8f1; border: 1px solid #cfe6cf; }
+.result-err  { background: #fdf2f2; border: 1px solid #f0d2d2; }
+.result ul { margin: 7px 0 0; padding-left: 18px; }
+.result li { margin-top: 3px; }
+.result-title { font-weight: 600; }
+
+.note-line {
+  margin: 14px 0 0;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+}
+
+.note { margin-top: 16px; font-size: 13px; color: var(--ink-2); }
+.note summary { cursor: pointer; color: var(--ink-2); }
+.note p { margin: 9px 0 0; }
+.note code {
+  padding: 1px 4px;
+  background: var(--surface-sub);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+.pill {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 20px;
+  font-size: 11.5px;
+}
+.pill-ok  { background: #f1f8f1; color: var(--good-text); }
+.pill-err { background: #fdf2f2; color: var(--critical); }
+
+/* ------------------------------------------------------------------ *
+ * Drawer
+ * ------------------------------------------------------------------ */
+.drawer {
+  width: min(880px, 92vw);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(11, 11, 11, .18);
+}
+.drawer::backdrop { background: rgba(11, 11, 11, .28); }
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-head h2 { font-size: 14px; }

@@ -1,0 +1,548 @@
+import express from 'express';
+import multer from 'multer';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import 'dotenv/config';
+import { query, pool } from './db.js';
+import { importBuffer, previewBuffer, isSupported } from './importer.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+app.use(express.json());
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+/* ------------------------------------------------------------------ *
+ * Filters -> SQL
+ * ------------------------------------------------------------------ */
+
+const LIST_FILTERS = {
+  shift: 'shift',
+  machine: 'no_mc',
+  group: 'kelompok_mesin',
+  type: 'type_mc',
+  fabric: 'kode_kain',
+  mo: 'mo'
+};
+
+/**
+ * Turns the query string into SQL clauses. Column names come from the
+ * whitelist above, never from the request; values are always bound.
+ *
+ * `startAt` offsets the placeholder numbers so a second clause set can be
+ * appended to the same statement; `dates: false` emits only the dimension
+ * filters, which is what the previous-period comparison needs.
+ */
+function buildFilters(q, { prefix = '', startAt = 0, dates = true } = {}) {
+  const clauses = [];
+  const params = [];
+  const bind = (v) => { params.push(v); return `$${startAt + params.length}`; };
+
+  if (dates && q.from) clauses.push(`${prefix}tgl >= ${bind(q.from)}`);
+  if (dates && q.to)   clauses.push(`${prefix}tgl <= ${bind(q.to)}`);
+
+  for (const [key, col] of Object.entries(LIST_FILTERS)) {
+    const vals = String(q[key] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+    if (vals.length) clauses.push(`${prefix}${col} = ANY(${bind(vals)})`);
+  }
+  return { clauses, params };
+}
+
+/** Builds a WHERE clause from the query string. Multi-values arrive comma-separated. */
+function whereFrom(q) {
+  const { clauses, params } = buildFilters(q);
+  return { sql: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '', params };
+}
+
+/**
+ * How a loom type is shown: the layout band and the mill's name for it, as the
+ * workbook header reads them — "AJL TOYOTA 1 | E SHADE". Falls back to the
+ * TYPE MC code when a type has no entry in the legend.
+ */
+const TYPE_LABEL = `COALESCE(NULLIF(concat_ws(' | ', t.band, t.description), ''), p.type_mc)`;
+
+const send = (res, fn) => fn().catch((err) => {
+  console.error(err);
+  res.status(500).json({ error: err.message });
+});
+
+/* ------------------------------------------------------------------ *
+ * Reference data for the filter controls
+ * ------------------------------------------------------------------ */
+
+app.get('/api/filters', (req, res) => send(res, async () => {
+  const { rows: [range] } = await query(
+    `SELECT min(tgl)::text AS min_date, max(tgl)::text AS max_date, count(*)::int AS total FROM production`
+  );
+  const col = async (c) =>
+    (await query(`SELECT DISTINCT ${c} AS v FROM production WHERE ${c} IS NOT NULL ORDER BY 1`))
+      .rows.map((r) => r.v);
+
+  // Machine types carry the mill's own name for the loom ("AJL 2 AIR TUCKER"),
+  // which is what people on the floor actually call them.
+  const { rows: types } = await query(`
+    SELECT DISTINCT p.type_mc AS value, ${TYPE_LABEL} AS label,
+           t.description, t.band, t.sort_order
+    FROM production p LEFT JOIN machine_type t USING (type_mc)
+    WHERE p.type_mc IS NOT NULL
+    ORDER BY t.sort_order NULLS LAST, p.type_mc`);
+
+  res.json({
+    range,
+    shifts:   await col('shift'),
+    groups:   await col('kelompok_mesin'),
+    types,
+    machines: await col('no_mc'),
+    fabrics:  await col('kode_kain'),
+    mos:      await col('mo')
+  });
+}));
+
+/* ------------------------------------------------------------------ *
+ * Headline numbers
+ * ------------------------------------------------------------------ */
+
+app.get('/api/summary', (req, res) => send(res, async () => {
+  const { sql, params } = whereFrom(req.query);
+
+  const { rows: [s] } = await query(`
+    SELECT
+      COALESCE(sum(produksi), 0)                       AS produksi,
+      count(*)::int                                    AS entries,
+      count(DISTINCT no_mc)::int                       AS machines,
+      count(DISTINCT tgl)::int                         AS days,
+      count(DISTINCT mo)::int                          AS orders,
+      count(*) FILTER (WHERE ket_bb IS NOT NULL)::int  AS stoppages,
+      count(*) FILTER (WHERE COALESCE(produksi,0) = 0)::int AS idle_shifts,
+      -- RPM attainment is output-weighted so big runs count for more.
+      CASE WHEN sum(rpm_target) > 0
+           THEN sum(rpm) / sum(rpm_target) * 100 END   AS rpm_attainment,
+      avg(rpm)                                         AS avg_rpm
+    FROM production ${sql}`, params);
+
+  // The same period length immediately before this one, under the same
+  // dimension filters — comparing a filtered period to an unfiltered one
+  // would make the delta meaningless.
+  const dims = buildFilters(req.query, { prefix: 'p.', startAt: params.length, dates: false });
+  const { rows: [prev] } = await query(`
+    WITH bounds AS (
+      SELECT min(tgl) AS lo, max(tgl) AS hi FROM production ${sql}
+    )
+    SELECT COALESCE(sum(p.produksi), 0) AS produksi, count(DISTINCT p.tgl)::int AS days
+    FROM production p, bounds b
+    WHERE p.tgl < b.lo AND p.tgl >= b.lo - (b.hi - b.lo + 1)
+    ${dims.clauses.map((c) => `AND ${c}`).join(' ')}`,
+    [...params, ...dims.params]);
+
+  res.json({ ...s, prev });
+}));
+
+/* ------------------------------------------------------------------ *
+ * Series and breakdowns
+ * ------------------------------------------------------------------ */
+
+app.get('/api/trend', (req, res) => send(res, async () => {
+  const { sql, params } = whereFrom(req.query);
+  const { rows } = await query(`
+    SELECT tgl::text AS date,
+           sum(produksi)                               AS produksi,
+           count(DISTINCT no_mc)::int                  AS machines,
+           CASE WHEN sum(rpm_target) > 0
+                THEN sum(rpm) / sum(rpm_target) * 100 END AS rpm_attainment
+    FROM production ${sql}
+    GROUP BY tgl ORDER BY tgl`, params);
+  res.json(rows);
+}));
+
+// dim is whitelisted, never interpolated from raw input.
+const DIMS = {
+  group: 'kelompok_mesin',
+  type: 'type_mc',
+  shift: 'shift',
+  fabric: 'kode_kain',
+  mo: 'mo',
+  machine: 'no_mc'
+};
+
+app.get('/api/breakdown/:dim', (req, res) => send(res, async () => {
+  const col = DIMS[req.params.dim];
+  if (!col) return res.status(400).json({ error: `Unknown dimension "${req.params.dim}"` });
+
+  // Aliased, because the machine-type breakdown joins the name lookup.
+  const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  params.push(limit);
+
+  // For machine type, show the mill's name and keep the code alongside it.
+  const isType = col === 'type_mc';
+  const label = isType ? TYPE_LABEL : `p.${col}`;
+  const join = isType ? 'LEFT JOIN machine_type t USING (type_mc)' : '';
+  const where = [...clauses, `p.${col} IS NOT NULL`].join(' AND ');
+
+  const { rows } = await query(`
+    SELECT ${label} AS label,
+           ${isType ? 'p.type_mc' : 'NULL'} AS code,
+           sum(p.produksi)              AS produksi,
+           count(*)::int                AS entries,
+           count(DISTINCT p.no_mc)::int AS machines,
+           CASE WHEN sum(p.rpm_target) > 0
+                THEN sum(p.rpm) / sum(p.rpm_target) * 100 END AS rpm_attainment
+    FROM production p ${join}
+    WHERE ${where}
+    GROUP BY ${label}${isType ? ', p.type_mc' : ''}
+    ORDER BY produksi DESC NULLS LAST
+    LIMIT $${params.length}`, params);
+  res.json(rows);
+}));
+
+/* ------------------------------------------------------------------ *
+ * Per-machine table
+ * ------------------------------------------------------------------ */
+
+const MACHINE_SORTS = {
+  machine: 'no_mc', produksi: 'produksi', avg_day: 'avg_day',
+  rpm: 'avg_rpm', attainment: 'rpm_attainment', stoppages: 'stoppages'
+};
+
+app.get('/api/machines', (req, res) => send(res, async () => {
+  const { sql, params } = whereFrom(req.query);
+  const sortCol = MACHINE_SORTS[req.query.sort] || 'produksi';
+  const dir = req.query.dir === 'asc' ? 'ASC' : 'DESC';
+
+  const { rows } = await query(`
+    SELECT no_mc                                     AS machine,
+           max(kelompok_mesin)                       AS grp,
+           max(type_mc)                              AS type,
+           max(COALESCE(NULLIF(concat_ws(' | ', t.band, t.description), ''), p.type_mc)) AS type_name,
+           sum(produksi)                             AS produksi,
+           count(DISTINCT tgl)::int                  AS days,
+           sum(produksi) / NULLIF(count(DISTINCT tgl), 0) AS avg_day,
+           avg(rpm)                                  AS avg_rpm,
+           CASE WHEN sum(rpm_target) > 0
+                THEN sum(rpm) / sum(rpm_target) * 100 END AS rpm_attainment,
+           count(*) FILTER (WHERE ket_bb IS NOT NULL)::int AS stoppages,
+           count(*) FILTER (WHERE COALESCE(produksi,0) = 0)::int AS idle,
+           string_agg(DISTINCT kode_kain, ', ' ORDER BY kode_kain) AS fabrics
+    FROM production p LEFT JOIN machine_type t USING (type_mc) ${sql}
+    GROUP BY no_mc
+    ORDER BY ${sortCol} ${dir} NULLS LAST, no_mc`, params);
+  res.json(rows);
+}));
+
+/**
+ * Every shift line for one machine — the drill-down behind a table row.
+ *
+ * PICK comes from the order header on that day's sheet, joined on order *and*
+ * date rather than order alone: it is a property of the order as it stood that
+ * day, so a change part-way through the month would show on the right rows.
+ */
+app.get('/api/machine/:no', (req, res) => send(res, async () => {
+  const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });
+  params.push(req.params.no);
+  const where = [...clauses, `p.no_mc = $${params.length}`].join(' AND ');
+
+  const { rows } = await query(`
+    SELECT p.tgl::text AS date, p.shift, p.mo, p.kode_kain, o.pick,
+           p.rpm, p.rpm_target, p.produksi, p.ket_bb
+    FROM production p
+    LEFT JOIN order_info o ON o.mo = p.mo AND o.as_of = p.tgl
+    WHERE ${where}
+    ORDER BY p.tgl, p.shift`, params);
+  res.json(rows);
+}));
+
+/* ------------------------------------------------------------------ *
+ * Global search
+ *
+ * One box over everything — customer, order, fabric, machine, machine type,
+ * stoppage note — but the answer is always a list of orders, because that is
+ * the level the mill plans and ships at.
+ * ------------------------------------------------------------------ */
+
+/** "A1" must not match A10/A11/A12, so machine numbers match as whole tokens. */
+const MACHINE_SHAPED = /^[A-Za-z]{1,2}\d{1,2}$/;
+
+app.get('/api/search', (req, res) => send(res, async () => {
+  const q = String(req.query.q ?? '').trim();
+  if (q.length < 2) return res.json({ query: q, rows: [] });
+
+  const like = `%${q.replace(/[%_\\]/g, (c) => '\\' + c)}%`;
+  const machineToken = MACHINE_SHAPED.test(q) ? q : null;
+
+  const { rows } = await query(`
+    WITH mos AS (
+      SELECT mo FROM order_info
+      UNION
+      SELECT mo FROM production WHERE mo IS NOT NULL AND mo <> '0'
+    ),
+    latest AS (
+      SELECT DISTINCT ON (mo) mo, customer, kode_kain, total_order, akumulasi, sisa_order, as_of
+      FROM order_info ORDER BY mo, as_of DESC
+    ),
+    prod AS (
+      SELECT p.mo,
+             sum(p.produksi)                                        AS produksi,
+             count(DISTINCT p.no_mc)::int                           AS n_machines,
+             min(p.tgl)::text                                       AS mulai,
+             max(p.tgl)::text                                       AS terakhir,
+             string_agg(DISTINCT p.no_mc, ' ')                      AS machines,
+             string_agg(DISTINCT p.kode_kain, ', ')                 AS fabrics,
+             string_agg(DISTINCT COALESCE(t.band || ' | ', '') || COALESCE(t.description, p.type_mc), ' · ') AS types,
+             string_agg(DISTINCT p.ket_bb, ', ')                    AS notes
+      FROM production p LEFT JOIN machine_type t USING (type_mc)
+      WHERE p.mo IS NOT NULL AND p.mo <> '0'
+      GROUP BY p.mo
+    )
+    SELECT m.mo,
+           l.customer,
+           COALESCE(pr.fabrics, l.kode_kain)                        AS kode_kain,
+           pr.types                                                 AS type_mc,
+           l.total_order, l.akumulasi, l.sisa_order,
+           pr.produksi, pr.n_machines, pr.mulai, pr.terakhir,
+           CASE
+             WHEN l.customer ILIKE $1                                        THEN 'customer'
+             WHEN m.mo ILIKE $1                                              THEN 'order'
+             WHEN pr.fabrics ILIKE $1 OR l.kode_kain ILIKE $1                THEN 'fabric'
+             WHEN pr.types ILIKE $1                                          THEN 'machine type'
+             WHEN $2::text IS NOT NULL AND pr.machines ~* ('\\m' || $2 || '\\M') THEN 'machine'
+             WHEN pr.notes ILIKE $1                                          THEN 'note'
+           END AS matched
+    FROM mos m
+    LEFT JOIN latest l ON l.mo = m.mo
+    LEFT JOIN prod  pr ON pr.mo = m.mo
+    WHERE l.customer ILIKE $1
+       OR m.mo ILIKE $1
+       OR pr.fabrics ILIKE $1
+       OR l.kode_kain ILIKE $1
+       OR pr.types ILIKE $1
+       OR pr.notes ILIKE $1
+       OR ($2::text IS NOT NULL AND pr.machines ~* ('\\m' || $2 || '\\M'))
+    ORDER BY pr.produksi DESC NULLS LAST, m.mo
+    LIMIT 60`, [like, machineToken]);
+
+  res.json({ query: q, rows });
+}));
+
+/* ------------------------------------------------------------------ *
+ * Order header — shown when the view is narrowed to an order or a fabric
+ * ------------------------------------------------------------------ */
+
+app.get('/api/order-info', (req, res) => send(res, async () => {
+  const mos = String(req.query.mo ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  const fabrics = String(req.query.fabric ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  if (!mos.length && !fabrics.length) return res.json([]);
+
+  // Only the order and fabric filters apply: an order header describes the
+  // whole order, not one machine-shift, so a machine or shift filter would
+  // narrow the production figure without narrowing the order it sits beside.
+  const clauses = [];
+  const params = [];
+  if (mos.length)     { params.push(mos);     clauses.push(`o.mo = ANY($${params.length})`); }
+  if (fabrics.length) { params.push(fabrics); clauses.push(`o.kode_kain = ANY($${params.length})`); }
+
+  const { rows } = await query(`
+    SELECT DISTINCT ON (o.mo)
+           o.mo, o.kode_kain, o.customer, o.pick, o.total_order, o.akumulasi, o.sisa_order,
+           o.as_of::text AS as_of,
+           COALESCE(p.periode, 0)   AS periode,
+           COALESCE(p.machines, 0)  AS machines,
+           p.terakhir::text         AS terakhir
+    FROM order_info o
+    LEFT JOIN (
+      SELECT mo, sum(produksi) AS periode, count(DISTINCT no_mc)::int AS machines,
+             max(tgl) AS terakhir
+      FROM production GROUP BY mo
+    ) p ON p.mo = o.mo
+    WHERE ${clauses.join(' OR ')}
+    ORDER BY o.mo, o.as_of DESC`, params);
+
+  rows.sort((a, b) => (Number(b.akumulasi) || 0) - (Number(a.akumulasi) || 0));
+  res.json(rows);
+}));
+
+/**
+ * The day-by-day progression for one order, as each daily sheet recorded it,
+ * with that day's loom output from the source sheet alongside.
+ */
+app.get('/api/order-history', (req, res) => send(res, async () => {
+  const mo = String(req.query.mo ?? '').trim();
+  if (!mo) return res.json([]);
+
+  const { rows } = await query(`
+    SELECT o.as_of::text AS date, o.total_order, o.akumulasi, o.sisa_order,
+           COALESCE(p.produksi, 0) AS produksi
+    FROM order_info o
+    LEFT JOIN (
+      SELECT tgl, sum(produksi) AS produksi FROM production WHERE mo = $1 GROUP BY tgl
+    ) p ON p.tgl = o.as_of
+    WHERE o.mo = $1
+    ORDER BY o.as_of`, [mo]);
+  res.json(rows);
+}));
+
+/* ------------------------------------------------------------------ *
+ * Orders
+ * ------------------------------------------------------------------ */
+
+const ORDER_SORTS = {
+  mo: 'mo', saldo: 'saldo', period: 'periode', total: 'kumulatif',
+  machines: 'machines', last: 'terakhir'
+};
+
+/**
+ * Per order, from the source sheet alone: the SALDO opening balance, what was
+ * woven in the selected period, and the two added together.
+ */
+app.get('/api/orders', (req, res) => send(res, async () => {
+  const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const sortCol = ORDER_SORTS[req.query.sort] || 'kumulatif';
+  const dir = req.query.dir === 'asc' ? 'ASC' : 'DESC';
+
+  const { rows } = await query(`
+    SELECT p.mo,
+           max(p.kode_kain)                              AS kode_kain,
+           COALESCE(max(s.produksi), 0)                  AS saldo,
+           sum(p.produksi)                               AS periode,
+           COALESCE(max(s.produksi), 0) + sum(p.produksi) AS kumulatif,
+           count(DISTINCT p.no_mc)::int                  AS machines,
+           count(DISTINCT p.tgl)::int                    AS days,
+           min(p.tgl)::text                              AS mulai,
+           max(p.tgl)::text                              AS terakhir
+    FROM production p
+    LEFT JOIN saldo s ON s.mo = p.mo
+    ${where}
+    ${where ? 'AND' : 'WHERE'} p.mo IS NOT NULL
+    GROUP BY p.mo
+    ORDER BY ${sortCol} ${dir} NULLS LAST, p.mo`, params);
+
+  // Orders carried over but not woven at all in this period.
+  const { rows: [dormant] } = await query(`
+    SELECT count(*)::int AS n, COALESCE(sum(s.produksi), 0) AS produksi
+    FROM saldo s
+    WHERE NOT EXISTS (SELECT 1 FROM production p WHERE p.mo = s.mo)`);
+
+  res.json({ rows, dormant });
+}));
+
+/* ------------------------------------------------------------------ *
+ * Stoppages and quality
+ * ------------------------------------------------------------------ */
+
+app.get('/api/stoppages', (req, res) => send(res, async () => {
+  const { sql, params } = whereFrom(req.query);
+  const { rows } = await query(`
+    SELECT ket_bb AS label, count(*)::int AS entries,
+           count(DISTINCT no_mc)::int AS machines,
+           COALESCE(sum(produksi), 0) AS produksi
+    FROM production ${sql}
+    ${sql ? 'AND' : 'WHERE'} ket_bb IS NOT NULL
+    GROUP BY ket_bb ORDER BY entries DESC`, params);
+  res.json(rows);
+}));
+
+app.get('/api/quality', (req, res) => send(res, async () => {
+  // Grades are reported per MO, so only the date / MO / fabric filters apply.
+  const q = { from: req.query.from, to: req.query.to, mo: req.query.mo, fabric: req.query.fabric };
+  const clauses = [];
+  const params = [];
+  if (q.from) { params.push(q.from); clauses.push(`tgl >= $${params.length}`); }
+  if (q.to)   { params.push(q.to);   clauses.push(`tgl <= $${params.length}`); }
+  if (q.mo)   { params.push(String(q.mo).split(',')); clauses.push(`mo = ANY($${params.length})`); }
+  if (q.fabric) { params.push(String(q.fabric).split(',')); clauses.push(`kode_kain = ANY($${params.length})`); }
+  const sql = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const { rows: [totals] } = await query(`
+    SELECT COALESCE(sum(grade_a),0) AS a, COALESCE(sum(grade_b),0) AS b,
+           COALESCE(sum(bs),0) AS bs, COALESCE(sum(rk),0) AS rk,
+           COALESCE(sum(total),0) AS total, count(*)::int AS rows
+    FROM grade ${sql}`, params);
+
+  const { rows: daily } = await query(`
+    SELECT tgl::text AS date, sum(grade_a) AS a, sum(grade_b) AS b,
+           sum(bs) AS bs, sum(rk) AS rk, sum(total) AS total
+    FROM grade ${sql} GROUP BY tgl ORDER BY tgl`, params);
+
+  const { rows: byFabric } = await query(`
+    SELECT kode_kain AS label, sum(total) AS total, sum(grade_a) AS a,
+           sum(bs) + sum(rk) AS defect
+    FROM grade ${sql}
+    ${sql ? 'AND' : 'WHERE'} kode_kain IS NOT NULL
+    GROUP BY kode_kain ORDER BY total DESC LIMIT 15`, params);
+
+  res.json({ totals, daily, byFabric });
+}));
+
+/* ------------------------------------------------------------------ *
+ * Import
+ * ------------------------------------------------------------------ */
+
+app.post('/api/preview', upload.single('file'), (req, res) => send(res, async () => {
+  if (!req.file) return res.status(400).json({ error: 'No file received' });
+  if (!isSupported(req.file.originalname)) {
+    return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });
+  }
+  res.json({ file: req.file.originalname, sheets: previewBuffer(req.file.buffer, req.file.originalname) });
+}));
+
+app.post('/api/import', upload.single('file'), (req, res) => send(res, async () => {
+  if (!req.file) return res.status(400).json({ error: 'No file received' });
+  if (!isSupported(req.file.originalname)) {
+    return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });
+  }
+  const only = req.body.sheets ? String(req.body.sheets).split(',').filter(Boolean) : null;
+  const results = await importBuffer(req.file.buffer, req.file.originalname, { only });
+  res.json({ file: req.file.originalname, results });
+}));
+
+app.get('/api/imports', (req, res) => send(res, async () => {
+  const { rows } = await query(
+    `SELECT file_name, sheet_name, dataset, rows_read, rows_written, rows_skipped,
+            status, message, to_char(created_at, 'YYYY-MM-DD HH24:MI') AS at
+     FROM import_log ORDER BY created_at DESC LIMIT 25`
+  );
+  res.json(rows);
+}));
+
+/* ------------------------------------------------------------------ *
+ * CSV export of the current view
+ * ------------------------------------------------------------------ */
+
+app.get('/api/export.csv', (req, res) => send(res, async () => {
+  // Aliased and fully qualified: order_info also has mo and kode_kain, so a
+  // bare column name here is ambiguous once it is joined in.
+  const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const { rows } = await query(`
+    SELECT p.tgl::text AS tgl, p.shift, p.no_mc, p.kelompok_mesin, p.type_mc,
+           t.band AS kelompok_layout, t.description AS nama_mesin,
+           p.mo, p.kode_kain, o.pick, p.rpm, p.rpm_target, p.produksi, p.ket_bb
+    FROM production p
+    LEFT JOIN machine_type t ON t.type_mc = p.type_mc
+    LEFT JOIN order_info o ON o.mo = p.mo AND o.as_of = p.tgl
+    ${where} ORDER BY p.tgl, p.no_mc, p.shift`, params);
+
+  // A value starting with = + - or @ is run as a formula when the CSV is opened
+  // in Excel. The data comes from a spreadsheet, so it can carry one; prefixing
+  // an apostrophe makes Excel treat it as text.
+  const cell = (v) => {
+    if (v === null || v === undefined) return '';
+    let s = String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = ['tgl', 'shift', 'no_mc', 'kelompok_mesin', 'type_mc', 'kelompok_layout',
+    'nama_mesin', 'mo', 'kode_kain', 'pick', 'rpm', 'rpm_target', 'produksi', 'ket_bb'];
+  const csv = [head.join(','), ...rows.map((r) => head.map((h) => cell(r[h])).join(','))].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="machine-production.csv"');
+  res.send('﻿' + csv);
+}));
+
+app.use(express.static(path.join(__dirname, '..', 'public')));
+
+const port = Number(process.env.PORT || 3000);
+app.listen(port, () => console.log(`Machine dashboard on http://localhost:${port}`));
+
+process.on('SIGINT', async () => { await pool.end(); process.exit(0); });
