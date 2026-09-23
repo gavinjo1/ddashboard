@@ -96,6 +96,50 @@ Accepted there and on the Pabrik tab: `.xls`, `.xlsx`, `.xlsm`, `.xlsb`,
 rather than by sheet name, so a CSV saved from the export's Data sheet — which
 arrives with no sheet name at all — works the same as the original workbook.
 
+## Docker
+
+```bash
+cp .env.example .env             # fill SESSION_SECRET and POSTGRES_PASSWORD
+docker compose up --build
+```
+
+Then open `http://localhost:3000` and register the first account.
+
+Compose runs two containers: `postgres:17-alpine` and the app. **Both
+databases live inside that one Postgres server** — `machine_dashboard` and
+`loom_monitor` — and `scripts/setup-db.js` creates them on first start. The
+schemas are all `CREATE ... IF NOT EXISTS`, so it is safe to repeat on every
+boot. Data survives in the `pgdata` volume; `docker compose down -v` deletes it.
+
+The entrypoint waits for Postgres before the schema step, so the app does not
+crash-loop while the database is still starting. `depends_on` covers it under
+compose; the wait matters when pointing at a database elsewhere.
+
+Two switches for a managed database, where the role often cannot open the
+`postgres` database or create one:
+
+| Variable | Effect |
+|---|---|
+| `RUN_SETUP=0` | Skip schema creation; apply `server/schema.sql` and `server/loom-schema.sql` yourself |
+| `WAIT_FOR_DB=0` | Skip the connection wait |
+
+`SESSION_SECRET` is required — the server exits without it, and compose
+refuses to start if it is unset rather than booting something nobody can sign
+in to. Set `COOKIE_SECURE=1` only behind HTTPS; on plain http it stops the
+session cookie from being stored and nobody can sign in.
+
+The image builds with `--omit=dev` from the lockfile, runs as the `node` user,
+and mounts its filesystem read-only — uploads are parsed in memory, so nothing
+is written to disk at runtime. `init: true` gives PID 1 a real init so
+`SIGTERM` reaches node and the pool closes cleanly instead of waiting out the
+kill timeout.
+
+**Not covered:** `DATABASE_URL`. `db.js` and `loom-db.js` read `PGHOST`,
+`PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGDATABASE_LOOM`
+individually, and there is no SSL option. A managed host that hands out a
+single connection URL needs those split out, or a change to `db.js`. The
+second database is also a problem on hosts that give you exactly one.
+
 ## Loading data
 
 From the Import tab, or from the command line:

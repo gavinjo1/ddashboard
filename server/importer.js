@@ -628,7 +628,10 @@ function dedupe(records, keyOf) {
 }
 
 async function upsert(client, dataset, records, sourceFile, editedBy = null) {
-  if (!records.length) return 0;
+  // Same shape as the normal return: the caller destructures the result, and a
+  // bare 0 left `written` undefined, which import_log then stored as NULL for
+  // any recognised sheet that turned out to hold no rows.
+  if (!records.length) return { inserted: 0, updated: 0, written: 0 };
 
   const cols = dataset === 'production' ? PROD_COLS : GRADE_COLS;
   const table = dataset === 'production' ? 'production' : 'grade';

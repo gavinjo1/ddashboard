@@ -1,0 +1,34 @@
+# Secrets. .env must never reach an image — anyone with the image can read it.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Factory data. These carry customer names, order quantities and production
+# figures, and are gitignored for the same reason.
+*.xlsx
+*.xlsm
+*.xlsb
+*.xls
+*.csv
+*.tsv
+*.ods
+
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.github
+Dockerfile
+docker-compose*.yml
+.dockerignore
+README.md
+.DS_Store
+.vscode
+.idea
+.venv
+__pycache__
+coverage
+*.dump
+*.sql.gz

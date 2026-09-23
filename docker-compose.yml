@@ -1,0 +1,55 @@
+# The dashboard and its database. Two databases live inside the one Postgres
+# server — machine_dashboard and loom_monitor — and setup-db.js creates both.
+#
+#   cp .env.docker.example .env   (then fill SESSION_SECRET and the password)
+#   docker compose up --build
+#
+# Then open http://localhost:3000 and register the first account.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The app's own entrypoint waits too; this is what gates depends_on.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    # Not published: only the app needs to reach it. Add a ports entry if you
+    # want to connect with psql from the host.
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: machine_dashboard
+      PGDATABASE_LOOM: loom_monitor
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      PORT: 3000
+    ports:
+      - "${PORT:-3000}:3000"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+
+volumes:
+  pgdata:

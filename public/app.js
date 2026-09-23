@@ -774,7 +774,6 @@ async function loadPabrik() {
     value: (d) => Number(d.minutes),
     format: (v) => fmt.int(v / 60) + ' h',
     labelWidth: 92,
-    max: 12,
     tipRows: (d) => [
       ['Time lost', fmt.int(Number(d.minutes) / 60) + ' loom-h'],
       ['Stops', fmt.int(d.count)],
