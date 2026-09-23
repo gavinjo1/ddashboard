@@ -249,6 +249,76 @@ export function inspectSheet(ws) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Daily capacity — the monthly efficiency sheet
+ *
+ *   row 3   ... | TOTAL AJL 1,2,3,4 |          (merged over the group)
+ *   row 4   E SHADE | E SHADE190 | ...         (per-type bands)
+ *   row 5   TGL | PROD | % | PICK RATA2 | prod100% | PROD | % | ...
+ *   row 7+  one row per day of the month
+ *
+ * Only the TOTAL group is read. The sheet also carries the same four columns
+ * per machine type, but those bands sum to a different number than TOTAL
+ * (the total uses its own average pick), so taking both would put two
+ * conflicting capacities in the same chart.
+ * ------------------------------------------------------------------ */
+
+export function readDailyCapacity(ws) {
+  const rows = sheetRows(ws);
+
+  for (let r = 0; r < Math.min(rows.length, 20); r++) {
+    const head = rows[r].map(normHeader);
+    if (head[0] !== 'TGL') continue;
+
+    // Each group is PROD | % | PICK RATA2 | prod100%, so prod100% closes it.
+    const ends = head.map((h, c) => (h === 'PROD100' ? c : -1)).filter((c) => c >= 3);
+    if (ends.length < 2) continue;
+
+    // The group labelled TOTAL, from the band row above (row 4) or the one
+    // above that (row 3) — whichever carries the word.
+    const total = ends.find((c) => [r - 1, r - 2]
+      .some((br) => br >= 0 && /TOTAL/i.test(String(rows[br]?.[c - 3] ?? ''))));
+    if (total === undefined) continue;
+
+    const [cProd, cEff, cPick, cCap] = [total - 3, total - 2, total - 1, total];
+    const out = [];
+    for (let i = r + 1; i < rows.length; i++) {
+      const tgl = toDate(rows[i][0]);
+      const prod100 = toNum(rows[i][cCap]);
+      // Days the sheet has not been filled in yet are left out rather than
+      // carried forward or guessed.
+      if (!tgl || !prod100) continue;
+      out.push({
+        tgl,
+        prod: toNum(rows[i][cProd]),
+        prod100,
+        pick_rata2: toNum(rows[i][cPick]),
+        eff_pct: toNum(rows[i][cEff])
+      });
+    }
+    if (out.length) return out;
+  }
+  return [];
+}
+
+async function upsertCapacity(client, entries, sourceFile) {
+  if (!entries.length) return 0;
+  const cols = ['tgl', 'prod', 'prod100', 'pick_rata2', 'eff_pct'];
+  const values = [];
+  const tuples = entries.map((e, i) => {
+    values.push(...cols.map((c) => e[c]), sourceFile);
+    return `(${cols.map((_, c) => `$${i * 6 + c + 1}`).join(',')},$${i * 6 + 6})`;
+  });
+  const res = await client.query(`
+    INSERT INTO daily_capacity (${cols.join(',')}, source_file)
+    VALUES ${tuples.join(',')}
+    ON CONFLICT (tgl) DO UPDATE SET
+      prod = EXCLUDED.prod, prod100 = EXCLUDED.prod100,
+      pick_rata2 = EXCLUDED.pick_rata2, eff_pct = EXCLUDED.eff_pct,
+      source_file = EXCLUDED.source_file, imported_at = now()`, values);
+  return res.rowCount;
+}
+
+/* ------------------------------------------------------------------ *
  * Order header
  *
  * Each daily sheet carries, above its machine grid, one row per order:
@@ -683,6 +753,23 @@ export async function importBuffer(buffer, fileName, { only = null, dataset = nu
           results.push({ sheet: '(order headers)', dataset: 'order_info',
             status: 'error', message: err.message });
         }
+      }
+
+      // Daily capacity, from whichever sheet carries the monthly efficiency grid.
+      for (const name of wb.SheetNames) {
+        if (only && !only.includes(name)) continue;
+        let cap = [];
+        try { cap = readDailyCapacity(wb.Sheets[name]); } catch { continue; }
+        if (!cap.length) continue;
+        try {
+          const written = await upsertCapacity(client, cap, fileName);
+          results.push({ sheet: `(daily capacity · ${name})`, dataset: 'daily_capacity',
+            status: 'ok', read: cap.length, written, skipped: 0 });
+        } catch (err) {
+          results.push({ sheet: `(daily capacity · ${name})`, dataset: 'daily_capacity',
+            status: 'error', message: err.message });
+        }
+        break;
       }
 
       const legend = new Map();

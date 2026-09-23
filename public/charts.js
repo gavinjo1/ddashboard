@@ -427,16 +427,42 @@ export function columnChart(host, data, {
   format = fmt.num,
   unit = '',
   height = 230,
-  tipRows = null
+  tipRows = null,
+  // Optional target zone drawn behind the columns, per day: [low, high].
+  // Returning null for a day leaves that day blank rather than guessing.
+  band = null,
+  bandColour = '#eb6834',
+  // Up to two short lines printed above every column. Returning null for a
+  // line omits it. Dropped entirely when the columns are too close together
+  // for the text to stay apart — a row of overlapping numbers reads as noise.
+  labels = null
 } = {}) {
   const pts = data.filter((d) => y(d) !== null && !isNaN(y(d)));
   if (!pts.length) return empty(host);
 
   mount(host, (root, w) => {
-    const m = { t: 22, r: 10, b: 26, l: 48 };
+    const measureTop = measurer(`11.5px ${UI_FONT}`);
+    const measureSub = measurer(`10.5px ${UI_FONT}`);
+
+    // Decide up front whether the per-column labels fit, because the top
+    // margin has to make room for them.
+    const drawn = labels ? pts.map(labels) : [];
+    const widest = drawn.length
+      ? Math.max(...drawn.map((l) => Math.max(
+          l?.[0] ? measureTop(l[0]) : 0, l?.[1] ? measureSub(l[1]) : 0)))
+      : 0;
+    const slotW = Math.max(40, w - 58 - 10) / pts.length;
+    // A clear gap, not a hairline: labels that only just avoid touching still
+    // read as one run of digits.
+    const showLabels = labels && widest + 16 <= slotW;
+    const twoLines = showLabels && drawn.some((l) => l?.[1]);
+
+    const m = { t: showLabels ? (twoLines ? 40 : 26) : 22, r: 10, b: 26, l: 48 };
     const iw = Math.max(40, w - m.l - m.r);
     const ih = height - m.t - m.b;
-    const tk = ticks(Math.max(...pts.map(y)));
+    const bandOf = band ? (d) => { const b = band(d); return b && b[1] > 0 ? b : null; } : () => null;
+    const bandTop = band ? Math.max(0, ...pts.map((d) => bandOf(d)?.[1] ?? 0)) : 0;
+    const tk = ticks(Math.max(...pts.map(y), bandTop));
     const top = tk[tk.length - 1];
     const scaleY = (v) => m.t + ih - (v / (top || 1)) * ih;
 
@@ -453,14 +479,40 @@ export function columnChart(host, data, {
     const keep = labelIndices(pts.length, Math.max(1, Math.ceil(pts.length / Math.floor(iw / 58))));
     const peak = pts.reduce((best, d) => (y(d) > y(best) ? d : best), pts[0]);
 
+    // The target zone goes down first so the columns read on top of it.
+    if (band) {
+      pts.forEach((d, i) => {
+        const b = bandOf(d);
+        if (!b) return;
+        const cx = m.l + slot * i + slot / 2;
+        // Full slot width so consecutive days meet and the zone reads as one
+        // continuous strip rather than a row of floating caps.
+        const w = slot;
+        const yHi = scaleY(b[1]);
+        svg.append(el('rect', {
+          x: cx - w / 2, y: yHi, width: w, height: Math.max(1, scaleY(b[0]) - yHi),
+          fill: bandColour, opacity: 0.14
+        }));
+        svg.append(el('line', {
+          x1: cx - w / 2, x2: cx + w / 2, y1: yHi, y2: yHi,
+          stroke: bandColour, 'stroke-width': 1.5, opacity: 0.85
+        }));
+      });
+    }
+
     pts.forEach((d, i) => {
       const cx = m.l + slot * i + slot / 2;
       const yTop = scaleY(y(d));
       const g = el('g', { class: 'bar-row' });
       g.append(el('rect', { class: 'bar', x: cx - barW / 2, y: yTop, width: barW, height: Math.max(1, m.t + ih - yTop), rx: 3 }));
 
-      // direct-label the peak only; the axis and tooltip carry the rest
-      if (d === peak) {
+      if (showLabels) {
+        const [main, sub] = drawn[i] ?? [];
+        if (sub) g.append(el('text', { class: 'col-sub', x: cx, y: yTop - 20, 'text-anchor': 'middle' }, sub));
+        if (main) g.append(el('text', { class: 'col-value', x: cx, y: yTop - 8, 'text-anchor': 'middle' }, main));
+      } else if (d === peak) {
+        // No room for every column, so only the peak is named; the axis and
+        // the tooltip carry the rest.
         g.append(el('text', { class: 'point-label', x: cx, y: yTop - 7, 'text-anchor': 'middle' }, format(y(d)) + unit));
       }
 

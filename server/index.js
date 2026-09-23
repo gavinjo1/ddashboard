@@ -1,10 +1,12 @@
 import express from 'express';
 import multer from 'multer';
+import XLSX from 'xlsx';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import 'dotenv/config';
 import { query, pool } from './db.js';
 import { importBuffer, previewBuffer, isSupported } from './importer.js';
+import { loomRouter } from './loom-routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -141,16 +143,30 @@ app.get('/api/summary', (req, res) => send(res, async () => {
  * Series and breakdowns
  * ------------------------------------------------------------------ */
 
+/**
+ * `prod100` is the whole mill's output at 100% efficiency, from the monthly
+ * sheet. It is only comparable with an unfiltered day, so it is served only
+ * when nothing narrows the machines — see `capacityApplies`.
+ */
+const NARROWING = ['shift', 'machine', 'group', 'type', 'fabric', 'mo'];
+const capacityApplies = (q) => !NARROWING.some((k) => String(q[k] ?? '').trim());
+
 app.get('/api/trend', (req, res) => send(res, async () => {
-  const { sql, params } = whereFrom(req.query);
+  // Aliased via buildFilters rather than rewriting the clause with a regex —
+  // a filter value could contain a column name and get mangled.
+  const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const showCapacity = capacityApplies(req.query);
+
   const { rows } = await query(`
-    SELECT tgl::text AS date,
-           sum(produksi)                               AS produksi,
-           count(DISTINCT no_mc)::int                  AS machines,
-           CASE WHEN sum(rpm_target) > 0
-                THEN sum(rpm) / sum(rpm_target) * 100 END AS rpm_attainment
-    FROM production ${sql}
-    GROUP BY tgl ORDER BY tgl`, params);
+    SELECT p.tgl::text AS date,
+           sum(p.produksi)              AS produksi,
+           count(DISTINCT p.no_mc)::int AS machines,
+           ${showCapacity ? 'max(c.prod100)' : 'NULL::numeric'} AS prod100
+    FROM production p
+    LEFT JOIN daily_capacity c ON c.tgl = p.tgl
+    ${where}
+    GROUP BY p.tgl ORDER BY p.tgl`, params);
   res.json(rows);
 }));
 
@@ -474,6 +490,84 @@ app.get('/api/quality', (req, res) => send(res, async () => {
 }));
 
 /* ------------------------------------------------------------------ *
+ * Manual entry — one shift at a time, without a file
+ * ------------------------------------------------------------------ */
+
+/**
+ * Sensible values for the fields the operator should not have to retype.
+ * Machine type and fabric count never vary per machine in the data, and a
+ * fabric code never varies per order, so those are safe to fill in. Machine
+ * group and target RPM do drift, so the most recent value is offered as a
+ * starting point and stays editable.
+ */
+app.get('/api/entry/defaults', (req, res) => send(res, async () => {
+  const out = { machine: null, order: null };
+
+  if (req.query.no_mc) {
+    const { rows: [m] } = await query(`
+      SELECT type_mc, kelompok_mesin, jml_kain, rpm, rpm_target
+      FROM production WHERE no_mc = $1 ORDER BY tgl DESC, shift DESC LIMIT 1`, [req.query.no_mc]);
+    out.machine = m ?? null;
+  }
+  if (req.query.mo) {
+    const { rows: [o] } = await query(`
+      SELECT kode_kain, rpm_target FROM production
+      WHERE mo = $1 ORDER BY tgl DESC LIMIT 1`, [req.query.mo]);
+    const { rows: [i] } = await query(
+      `SELECT customer, pick FROM order_info WHERE mo = $1 ORDER BY as_of DESC LIMIT 1`, [req.query.mo]);
+    out.order = o ? { ...o, ...(i ?? {}) } : null;
+  }
+  res.json(out);
+}));
+
+const ENTRY_NUM = ['jml_kain', 'rpm', 'rpm_target', 'produksi'];
+
+app.post('/api/entry', (req, res) => send(res, async () => {
+  const b = req.body ?? {};
+  const tgl = String(b.tgl ?? '').trim();
+  const shift = String(b.shift ?? '').trim().toUpperCase();
+  const no_mc = String(b.no_mc ?? '').trim();
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tgl)) return res.status(400).json({ error: 'Date must be YYYY-MM-DD.' });
+  if (!['A', 'B', 'C'].includes(shift)) return res.status(400).json({ error: 'Shift must be A, B or C.' });
+  if (!no_mc) return res.status(400).json({ error: 'Machine is required.' });
+
+  const num = {};
+  for (const k of ENTRY_NUM) {
+    const raw = b[k];
+    if (raw === '' || raw === null || raw === undefined) { num[k] = null; continue; }
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: `${k} must be a number, not "${raw}".` });
+    num[k] = v;
+  }
+
+  // Derived exactly as the workbook derives them, so a hand-entered row and an
+  // imported one cannot disagree.
+  const jml = num.jml_kain || null;
+  const hit_rpm = num.rpm != null && jml ? num.rpm * jml : null;
+  const ketik_prod = num.produksi != null && jml ? num.produksi / jml : null;
+
+  const { rows: [row] } = await query(`
+    INSERT INTO production
+      (tgl, shift, no_mc, mo, kode_kain, type_mc, kelompok_mesin, jml_kain,
+       rpm, rpm_target, hit_rpm, produksi, ketik_rpm, ketik_prod, ket_bb, source_file)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$9,$13,$14,'manual entry')
+    ON CONFLICT (tgl, shift, no_mc) DO UPDATE SET
+      mo = EXCLUDED.mo, kode_kain = EXCLUDED.kode_kain, type_mc = EXCLUDED.type_mc,
+      kelompok_mesin = EXCLUDED.kelompok_mesin, jml_kain = EXCLUDED.jml_kain,
+      rpm = EXCLUDED.rpm, rpm_target = EXCLUDED.rpm_target, hit_rpm = EXCLUDED.hit_rpm,
+      produksi = EXCLUDED.produksi, ketik_rpm = EXCLUDED.ketik_rpm,
+      ketik_prod = EXCLUDED.ketik_prod, ket_bb = EXCLUDED.ket_bb,
+      source_file = 'manual entry', imported_at = now()
+    RETURNING (xmax = 0) AS inserted, tgl::text, shift, no_mc, produksi`,
+    [tgl, shift, no_mc, b.mo || null, b.kode_kain || null, b.type_mc || null,
+     b.kelompok_mesin || null, jml, num.rpm, num.rpm_target, hit_rpm, num.produksi,
+     ketik_prod, (b.ket_bb || '').trim() || null]);
+
+  res.json({ ...row, ketik_prod, hit_rpm });
+}));
+
+/* ------------------------------------------------------------------ *
  * Import
  * ------------------------------------------------------------------ */
 
@@ -502,6 +596,75 @@ app.get('/api/imports', (req, res) => send(res, async () => {
      FROM import_log ORDER BY created_at DESC LIMIT 25`
   );
   res.json(rows);
+}));
+
+/* ------------------------------------------------------------------ *
+ * Export
+ *
+ * The .xlsx export rebuilds the workbook's own SOURCE DATA sheet, column for
+ * column — including the six ID columns the dashboard does not otherwise
+ * store, because every formula elsewhere in that workbook looks rows up by
+ * them. Paste the result over SOURCE DATA and the daily sheets, BULANAN and
+ * GRADE recalculate on their own.
+ *
+ * Reproducing those sheets and their ~50,000 formulas here would be the wrong
+ * way round: they already exist and already work.
+ * ------------------------------------------------------------------ */
+
+const SOURCE_HEADERS = ['TGL', 'ID PERSHIFT', 'ID LAP MO', 'ID RPM REAL', 'ID KELOMPOK MESIN',
+  'ID LAY OUT', 'ID BB', 'SHIFT', 'NO MC', 'MO', 'KODE KAIN', 'TYPE MC', 'KELOMPOK MESIN',
+  'JML KAIN', 'RPM', 'EFF', 'PRODUKSI', 'HIT RPM', 'RPM TARGET', 'KETIK RPM', 'KETIK PROD', 'KET BB'];
+
+/** Excel's own day number, which the ID columns are built from. */
+const excelSerial = (iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+};
+
+function sourceRow(r) {
+  const ser = excelSerial(r.tgl);
+  const shift = r.shift ?? '';
+  const type = r.type_mc ?? '';
+  return [
+    r.tgl,
+    `${shift}${ser}`,                                   // ID PERSHIFT
+    `${ser}${r.mo ?? ''}${type}`,                       // ID LAP MO
+    `${type}${ser}`,                                    // ID RPM REAL
+    `${r.kelompok_mesin ?? ''}${shift}${ser}`,          // ID KELOMPOK MESIN
+    `${r.no_mc ?? ''}${shift}${ser}`,                   // ID LAY OUT
+    `${r.ket_bb ?? ''}${type}${ser}`,                   // ID BB
+    shift, r.no_mc, r.mo, r.kode_kain, type, r.kelompok_mesin,
+    r.jml_kain, r.rpm, null,                            // EFF is empty in the source too
+    r.produksi, r.hit_rpm, r.rpm_target, r.ketik_rpm, r.ketik_prod, r.ket_bb
+  ];
+}
+
+async function exportRows(q) {
+  const { clauses, params } = buildFilters(q, { prefix: 'p.' });
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const { rows } = await query(`
+    SELECT p.tgl::text AS tgl, p.shift, p.no_mc, p.mo, p.kode_kain, p.type_mc,
+           p.kelompok_mesin, p.jml_kain, p.rpm, p.rpm_target, p.hit_rpm,
+           p.produksi, p.ketik_rpm, p.ketik_prod, p.ket_bb, o.pick,
+           t.band AS kelompok_layout, t.description AS nama_mesin
+    FROM production p
+    LEFT JOIN machine_type t ON t.type_mc = p.type_mc
+    LEFT JOIN order_info o ON o.mo = p.mo AND o.as_of = p.tgl
+    ${where} ORDER BY p.tgl, p.no_mc, p.shift`, params);
+  return rows;
+}
+
+app.get('/api/export.xlsx', (req, res) => send(res, async () => {
+  const rows = await exportRows(req.query);
+  const sheet = XLSX.utils.aoa_to_sheet([SOURCE_HEADERS, ...rows.map(sourceRow)]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet, 'SOURCE DATA');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  const span = rows.length ? `${rows[0].tgl}_${rows[rows.length - 1].tgl}` : 'kosong';
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="SOURCE DATA ${span}.xlsx"`);
+  res.send(buf);
 }));
 
 /* ------------------------------------------------------------------ *
@@ -539,6 +702,10 @@ app.get('/api/export.csv', (req, res) => send(res, async () => {
   res.setHeader('Content-Disposition', 'attachment; filename="machine-production.csv"');
   res.send('﻿' + csv);
 }));
+
+// The factory's own loom monitoring data, on its own router and its own
+// database. Mounted here only so both are served from one port.
+app.use('/api/loom', loomRouter);
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 

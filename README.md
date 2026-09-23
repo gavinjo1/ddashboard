@@ -3,6 +3,51 @@
 A dashboard for the AJL daily loom report, backed by PostgreSQL. Reads the
 existing Excel workbook as-is — no reformatting of the mill's sheets.
 
+## Two datasets, two databases
+
+| | Production / Quality / Import | Pabrik |
+|---|---|---|
+| Source | the mill's hand-typed daily report (`.xlsx`) | the looms' own monitoring export (`.xls` Shift Report) |
+| Database | `machine_dashboard` | `loom_monitor` |
+| Code | `server/index.js`, `server/importer.js` | `server/loom-*.js` |
+
+They measure the same mill but are different systems, and they disagree in
+ways that matter — different shift letters, different fabric spellings,
+different notion of output. Keeping them apart means a number on screen always
+has one unambiguous source.
+
+## Reading the Pabrik numbers
+
+Hours there are **loom-hours**, added up across machines, not hours on a clock.
+116 looms in one eight-hour shift give 928 loom-hours, so a single shift can
+easily show 179 hours stopped. The tiles and columns say `loom-h` for this
+reason.
+
+Shifts the monitor only caught part of are excluded from every figure, and the
+count of what was dropped is on the tiles. The date range shown is the range
+actually counted, not the range imported — otherwise it would disagree with the
+chart beside it.
+
+## Shift rotation
+
+The looms write a fixed **time slot**: A = pagi, B = siang, C = malam. The
+mill's paperwork labels the same eight hours by **crew**, and crews move on one
+slot every Friday:
+
+```
+week 1   A pagi    B siang   C malam
+week 2   A siang   B malam   C pagi
+week 3   A malam   B pagi    C siang
+```
+
+So the two systems can carry different letters for the same shift, and joining
+on the letter alone is wrong. The importer derives the crew from the date.
+
+Anchored on the week beginning Friday 11 September 2026 and checked against the
+daily report: with this rotation the two sources line up to **0.00 m** per
+machine-shift on 16 September and **0.17 m** on the 17th. The other two
+rotations are out by 18-26 m.
+
 ## Setup
 
 Requires Node 18+ and a running PostgreSQL 13+.
@@ -10,9 +55,20 @@ Requires Node 18+ and a running PostgreSQL 13+.
 ```bash
 npm install
 cp .env.example .env     # edit if your Postgres user/host differ
-npm run setup            # creates the database and tables
+npm run setup            # creates both databases and their tables
 npm start                # http://localhost:3000
 ```
+
+Loading a loom export from the command line:
+
+```bash
+npm run import:loom -- "/path/to/17 SEPT ALL.xls"
+```
+
+Accepted there and on the Pabrik tab: `.xls`, `.xlsx`, `.xlsm`, `.xlsb`,
+`.ods`, `.csv`, `.tsv`, `.txt`. The rows are found by their `SORTKEY` header
+rather than by sheet name, so a CSV saved from the export's Data sheet — which
+arrives with no sheet name at all — works the same as the original workbook.
 
 ## Loading data
 
@@ -140,6 +196,7 @@ comma-separated `shift`, `group`, `type`, `fabric`, `mo`.
 | `GET /api/machine/:no` | every shift for one machine |
 | `GET /api/stoppages` | stoppage reasons by frequency |
 | `GET /api/quality` | grade totals, daily series and fabric breakdown |
+| `GET /api/export.xlsx` | the filtered rows as the workbook's own SOURCE DATA sheet, ID columns rebuilt |
 | `GET /api/export.csv` | the filtered rows as CSV, with `kelompok_layout` and `nama_mesin` |
 | `POST /api/preview` | sheets in an uploaded file, without writing |
 | `POST /api/import` | import an uploaded file |
@@ -166,6 +223,40 @@ first column pinned, and cells do not wrap: a wrapped
 Grid and flex items are given `min-width: 0`. Without it they refuse to shrink
 below their content, and a chart measured once at a wide size pins its card open
 and never shrinks back — which pushed the whole page sideways on a phone.
+
+## Efficiency target on the daily chart
+
+The monthly sheet (`BULANAN`, "LAPORAN EFFISIENSI & PRODUKSI AJL TOYOTA") holds
+`prod100%` — what the mill would have woven that day at 100% efficiency —
+alongside the actual output and the resulting efficiency. The Daily output
+chart shades the **90–100%** range behind the columns, so the gap to target is
+visible without doing arithmetic. September ran 78–86%.
+
+Only the sheet's own **TOTAL** column is imported. The same four columns exist
+per machine type, but those eight bands sum to ~757 m more than TOTAL, because
+TOTAL is computed from its own average pick rather than by adding the bands up.
+Importing both would put two different capacities in one chart.
+
+Two things the sheet does that the import works around:
+
+- It is filled in by hand and lags. 17 September has production but no capacity
+  row, so that day simply has no band — the value is not carried forward or
+  estimated.
+- Its band row repeats "AJL 3 AIR TUCKER" three times where the row above has
+  the correct names. The importer does not rely on those labels; it finds the
+  TOTAL group from the merged header above it.
+
+Each column is labelled with that day's **output** and, above it, that day's
+**efficiency**. The output is rounded to whole metres — at 120.000 m the two
+decimals are noise, and dropping them buys the width that keeps neighbouring
+labels apart. When the columns are too close for the text to stay clear — a
+phone, a tablet, or a long date range — the labels give way to a single label
+on the tallest column, and the tooltip carries the rest.
+
+The band is **hidden whenever a filter narrows the machines** — by shift,
+machine, group, type, fabric or order. `prod100%` covers every machine for a
+whole day, so comparing it with one shift or one order would overstate the
+shortfall. The caption says so when it happens.
 
 ## Numbers
 
@@ -228,6 +319,58 @@ accumulated metres as each daily sheet recorded them, plotted against the order
 quantity, with that day's loom output from `SOURCE DATA` beside it. The two
 agree — for MO/UW/26389 the jump from 40.820 to 41.626,4 on 5 September is
 exactly the 806,4 m the looms logged that day.
+
+## Exporting back to the workbook
+
+**Export Excel** rebuilds the workbook's own `SOURCE DATA` sheet — all 22
+columns in their original order, including the six `ID` columns the dashboard
+does not otherwise store:
+
+| Column | Rebuilt as |
+|---|---|
+| `ID PERSHIFT` | shift + Excel date serial |
+| `ID LAP MO` | serial + MO + TYPE MC |
+| `ID RPM REAL` | TYPE MC + serial |
+| `ID KELOMPOK MESIN` | KELOMPOK MESIN + shift + serial |
+| `ID LAY OUT` | NO MC + shift + serial |
+| `ID BB` | KET BB + TYPE MC + serial |
+
+Those are the keys every other sheet looks rows up by. Paste the export over
+`SOURCE DATA` and the daily sheets, `BULANAN` and `GRADE` recalculate on their
+own — their formulas are untouched.
+
+Reproducing those sheets here instead would be the wrong way round: the
+workbook holds roughly 50,000 formulas across 28 sheets, and they already work.
+
+Checked against the original sheet for 1 September: **7,371 cells compared, 12
+differ**, all in the rows with no order (`MO = 0`), where the source carries a
+literal `0` and `#N/A` that the importer reads as empty.
+
+**Export CSV** stays a plain flat table for anything else.
+
+## Adding one shift by hand
+
+The Import tab also takes a single shift typed in directly, for a shift that
+has not reached a file yet.
+
+Only what changes each shift is typed — date, shift, machine, order, output,
+RPM, note. The rest is filled from what the data already shows and stated
+under the form rather than applied silently:
+
+- **Machine type** and **fabric width count** never vary per machine anywhere
+  in the data, so they are taken as given.
+- **Fabric code** never varies per order, likewise.
+- **Machine group** and **target RPM** do drift, so the most recent value is
+  offered and stays editable.
+
+`HIT RPM` and `KETIK PROD` are derived the way the workbook derives them —
+`RPM × JML KAIN` and `PRODUKSI ÷ JML KAIN` — so a hand-entered row and an
+imported one cannot disagree.
+
+Rows are keyed on date + shift + machine like any other, so saving twice
+updates rather than duplicates, and the form says which happened. They carry
+`source_file = 'manual entry'` so they can be told apart later. **A file import
+covering the same date, shift and machine will overwrite them.**
 
 ## Adding a new day
 

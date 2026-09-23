@@ -18,6 +18,7 @@
     <button class="tab is-active" data-tab="production" role="tab">Production</button>
     <button class="tab" data-tab="quality" role="tab">Quality</button>
     <button class="tab" data-tab="import" role="tab">Import</button>
+    <button class="tab" data-tab="pabrik" role="tab">Pabrik</button>
   </nav>
   <div class="topbar-right">
     <div class="topbar-meta" id="dataRange"></div>
@@ -59,6 +60,8 @@
   <div class="filter-actions">
     <button class="btn btn-quiet" id="btnReset">Reset</button>
     <a class="btn btn-quiet" id="btnExport" href="#" download>Export CSV</a>
+    <a class="btn btn-quiet" id="btnExportXlsx" href="#" download
+       title="SOURCE DATA layout, ID columns included — paste it over the sheet and the workbook recalculates">Export Excel</a>
   </div>
   </div>
 </section>
@@ -122,6 +125,7 @@
         <p class="card-sub">Metres woven per day, all machines in the current filter.</p>
       </figcaption>
       <div class="chart" id="chartTrend"></div>
+      <p class="note-line" id="chartTrendNote"></p>
     </figure>
   </div>
 
@@ -218,6 +222,44 @@
 
 <!-- ------------------------------------------------------------------ -->
 <div class="panel" id="panel-import">
+  <section class="card">
+    <div class="card-head">
+      <h2>Add one shift by hand</h2>
+      <p class="card-sub">For a shift that is not in a file yet. Pick the machine and the
+        order and the rest fills itself in — the same fields the workbook carries.</p>
+    </div>
+
+    <form class="entry" id="entryForm" autocomplete="off">
+      <label class="field"><span>Date</span>
+        <input type="date" id="eTgl" required></label>
+      <label class="field"><span>Shift</span>
+        <select id="eShift" required><option>A</option><option>B</option><option>C</option></select></label>
+      <label class="field"><span>Machine</span>
+        <input id="eMc" list="dlMachines" placeholder="A1" required></label>
+      <label class="field"><span>Order</span>
+        <input id="eMo" list="dlOrders" placeholder="MO/UW/…"></label>
+      <label class="field"><span>Output (m)</span>
+        <input id="eProd" type="number" step="0.01" min="0" placeholder="0"></label>
+      <label class="field"><span>RPM</span>
+        <input id="eRpm" type="number" step="1" min="0"></label>
+      <label class="field"><span>RPM target</span>
+        <input id="eTarget" type="number" step="1" min="0"></label>
+      <label class="field entry-wide"><span>Note (KET BB)</span>
+        <input id="eKet" placeholder="TYING, BONGKAR HB, …"></label>
+
+      <div class="entry-actions">
+        <button class="btn btn-primary" type="submit" id="eSave">Save</button>
+        <button class="btn btn-quiet" type="button" id="eClear">Clear</button>
+      </div>
+    </form>
+
+    <p class="note-line" id="entryAuto"></p>
+    <div id="entryResult"></div>
+
+    <datalist id="dlMachines"></datalist>
+    <datalist id="dlOrders"></datalist>
+  </section>
+
   <div class="grid grid-even">
     <section class="card">
       <div class="card-head">
@@ -258,6 +300,104 @@
           <thead>
             <tr><th>When</th><th>File</th><th>Sheet</th><th class="num">Written</th><th class="num">Skipped</th><th>Status</th></tr>
           </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Pabrik: the looms' own monitoring export. Separate database, separate
+     router, nothing shared with the panels above. -->
+<div class="panel" id="panel-pabrik">
+  <section class="card" id="pabrikEmpty" hidden>
+    <div class="card-head">
+      <h2>No loom data yet</h2>
+      <p class="card-sub">Drop a Shift Report exported from the loom monitoring system below.</p>
+    </div>
+  </section>
+
+  <div class="stats" id="pabrikStats"></div>
+
+  <div class="grid">
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Efficiency by day</h2>
+        <p class="card-sub">Running time over total time, across every loom reporting that day.</p>
+      </figcaption>
+      <div class="chart" id="chartLoomDaily"></div>
+      <p class="note-line" id="loomDailyNote"></p>
+    </figure>
+  </div>
+
+  <div class="grid grid-2">
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Why the looms stop</h2>
+        <p class="card-sub">Time lost by cause, added up across all looms.</p>
+      </figcaption>
+      <div class="chart" id="chartLoomStops"></div>
+    </figure>
+
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Efficiency by time of day</h2>
+        <p class="card-sub">Which of the three shifts loses most. Crew letters rotate every Friday, so the time of day is the steady comparison.</p>
+      </figcaption>
+      <div class="chart" id="chartLoomWaktu"></div>
+    </figure>
+  </div>
+
+  <section class="card">
+    <div class="card-head card-head-row">
+      <div>
+        <h2>Looms</h2>
+        <p class="card-sub">Lowest efficiency first — these are the machines losing the most time.</p>
+      </div>
+      <input type="search" id="loomSearch" class="search" placeholder="Filter by loom or style…">
+    </div>
+    <div class="table-wrap">
+      <table class="data" id="loomTable">
+        <thead>
+          <tr>
+            <th class="sortable" data-lsort="loom">Loom</th>
+            <th>Style</th>
+            <th class="num sortable is-sorted-asc" data-lsort="effic">Efficiency</th>
+            <th class="num sortable" data-lsort="stop">Stopped (loom-h)</th>
+            <th class="num sortable" data-lsort="stops">Stops</th>
+            <th class="num">Weft</th>
+            <th class="num">Warp</th>
+            <th class="num sortable" data-lsort="rpm">RPM</th>
+            <th class="num sortable" data-lsort="meter">Cloth (m)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="grid grid-even">
+    <section class="card">
+      <div class="card-head">
+        <h2>Add a loom export</h2>
+        <p class="card-sub">The Shift Report from the loom monitoring system — .xls, .xlsx, .xlsm,
+          .xlsb, .ods, or a .csv saved from its Data sheet. Rows are matched on date + time slot + loom,
+          so re-uploading updates rather than duplicates.</p>
+      </div>
+      <div class="drop" id="loomDrop">
+        <input type="file" id="loomFile" accept=".xls,.xlsx,.xlsm,.xlsb,.csv,.tsv,.txt,.ods" hidden>
+        <p class="drop-main">Drop a file here, or <button class="linkish" id="loomBrowse">browse</button></p>
+        <p class="drop-sub">This writes to its own database and never touches the daily report.</p>
+      </div>
+      <div id="loomResult"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>Recent loom imports</h2></div>
+      <div class="table-wrap">
+        <table class="data" id="loomLog">
+          <thead><tr><th>When</th><th>File</th><th>Period</th><th class="num">Rows</th><th>Status</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

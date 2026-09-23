@@ -8,7 +8,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "setup": "node scripts/setup-db.js",
-    "import": "node scripts/import-file.js"
+    "import": "node scripts/import-file.js",
+    "import:loom": "node scripts/import-loom.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

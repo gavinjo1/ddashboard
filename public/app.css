@@ -517,6 +517,8 @@ main { padding: 16px 20px 40px; }
 .grid-line { stroke: var(--grid); stroke-width: 1; }
 .axis-line { stroke: var(--axis); stroke-width: 1; }
 .point-label { fill: var(--ink); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.col-value { fill: var(--ink); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.col-sub   { fill: var(--ink-muted); font-size: 10.5px; font-variant-numeric: tabular-nums; }
 .bar-value { fill: var(--ink-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .bar { fill: var(--series-1); }
 .bar-hit { fill: transparent; cursor: default; }
@@ -637,6 +639,41 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 .progress-fill.is-over { background: var(--warning); }
 .progress-pct { font-variant-numeric: tabular-nums; min-width: 42px; text-align: right; }
 
+/* ---- manual entry form ---- */
+.entry {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.entry .field input,
+.entry .field select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.entry .field input:focus-visible,
+.entry .field select:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
+.entry-wide { grid-column: span 2; }
+.entry-actions { display: flex; gap: 8px; }
+
+.btn-primary {
+  border-color: var(--series-1);
+  background: var(--series-1);
+  color: #fff;
+  font-weight: 500;
+}
+.btn-primary:hover { background: #1c5cab; color: #fff; }
+
+@media (max-width: 860px) {
+  .entry { grid-template-columns: 1fr 1fr; }
+  .entry-wide { grid-column: span 2; }
+  .entry-actions { grid-column: span 2; }
+  .entry-actions .btn { flex: 1; justify-content: center; }
+}
+
 /* ------------------------------------------------------------------ *
  * Import
  * ------------------------------------------------------------------ */
@@ -663,6 +700,16 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 .result ul { margin: 7px 0 0; padding-left: 18px; }
 .result li { margin-top: 3px; }
 .result-title { font-weight: 600; }
+
+.swatch-band {
+  display: inline-block;
+  width: 14px;
+  height: 9px;
+  margin-right: 7px;
+  border-radius: 2px;
+  background: rgba(235, 104, 52, .16);
+  border-top: 1.5px solid #eb6834;
+}
 
 .note-line {
   margin: 14px 0 0;

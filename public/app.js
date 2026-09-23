@@ -289,16 +289,43 @@ async function loadCharts() {
 
   // Discrete daily totals: columns show the day-to-day variation at the bar
   // tops, where a zero-baselined area of a near-flat series shows nothing.
+  const withCapacity = trend.filter((d) => d.prod100);
   columnChart($('#chartTrend'), trend, {
     y: (d) => Number(d.produksi),
-    format: fmt.int,
+    format: fmt.num,
     unit: ' m',
     height: 230,
+    band: (d) => (d.prod100 ? [Number(d.prod100) * 0.9, Number(d.prod100)] : null),
+    // Output on top of each column, with that day's efficiency above it where
+    // the monthly sheet has a capacity to measure against.
+    // Rounded to whole metres: at 120.000 m the ",24" is noise, and dropping
+    // it buys the width that keeps the labels apart.
+    labels: (d) => [
+      fmt.int(d.produksi),
+      d.prod100 ? fmt.pct(Number(d.produksi) / Number(d.prod100) * 100) : null
+    ],
     tipRows: (d) => [
       ['Output', fmt.num(d.produksi) + ' m'],
-      ['Machines', fmt.int(d.machines)]
+      ['Machines', fmt.int(d.machines)],
+      ...(d.prod100 ? [
+        ['At 100% efficiency', fmt.num(d.prod100) + ' m'],
+        ['Efficiency', fmt.pct(Number(d.produksi) / Number(d.prod100) * 100)]
+      ] : [])
     ]
   });
+
+  // Say plainly what the orange zone is, and when it is absent, why.
+  const note = $('#chartTrendNote');
+  if (!withCapacity.length) {
+    note.textContent = trend.length
+      ? 'Efficiency target hidden: it covers every machine for a whole day, so it cannot be compared with a filtered view.'
+      : '';
+  } else {
+    const gaps = trend.length - withCapacity.length;
+    note.innerHTML = '<span class="swatch-band"></span>Orange zone = output at 90–100% efficiency, '
+      + 'from the monthly sheet'
+      + (gaps ? ` · ${fmt.int(gaps)} day(s) not filled in there yet` : '') + '.';
+  }
 
   const [groups, shifts, stops] = await Promise.all([
     api('breakdown/group'), api('breakdown/shift'), api('stoppages')
@@ -470,6 +497,104 @@ async function loadQuality() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Manual entry
+ *
+ * The machine and the order carry most of the row with them, so only what
+ * genuinely changes each shift is typed. What gets filled in automatically is
+ * stated under the form rather than applied silently.
+ * ------------------------------------------------------------------ */
+
+let entryAuto = {};
+
+function fillLists(f) {
+  $('#dlMachines').innerHTML = f.machines.map((m) => `<option value="${esc(m)}">`).join('');
+  $('#dlOrders').innerHTML = f.mos.filter((m) => m !== '0')
+    .map((m) => `<option value="${esc(m)}">`).join('');
+  if (!$('#eTgl').value) $('#eTgl').value = f.range.max_date || '';
+}
+
+async function refreshEntryDefaults() {
+  const no_mc = $('#eMc').value.trim();
+  const mo = $('#eMo').value.trim();
+  if (!no_mc && !mo) { entryAuto = {}; $('#entryAuto').textContent = ''; return; }
+
+  const ticket = takeTicket('entryDefaults');
+  const d = await api('entry/defaults', { no_mc, mo });
+  if (!isCurrent('entryDefaults', ticket)) return;
+
+  entryAuto = {
+    type_mc: d.machine?.type_mc ?? null,
+    kelompok_mesin: d.machine?.kelompok_mesin ?? null,
+    jml_kain: d.machine?.jml_kain ?? null,
+    kode_kain: d.order?.kode_kain ?? null
+  };
+  // Suggestions, not decisions: only fill an empty box, never overwrite typing.
+  if (!$('#eRpm').value && d.machine?.rpm != null) $('#eRpm').value = d.machine.rpm;
+  if (!$('#eTarget').value) {
+    const t = d.order?.rpm_target ?? d.machine?.rpm_target;
+    if (t != null) $('#eTarget').value = t;
+  }
+
+  const bits = [
+    entryAuto.kode_kain && `fabric ${entryAuto.kode_kain}`,
+    entryAuto.type_mc && `type ${entryAuto.type_mc}`,
+    entryAuto.kelompok_mesin && `group ${entryAuto.kelompok_mesin}`,
+    entryAuto.jml_kain && `${fmt.int(entryAuto.jml_kain)} fabric width(s)`,
+    d.order?.customer && `customer ${d.order.customer}`,
+    d.order?.pick != null && `pick ${fmt.num(d.order.pick)}`
+  ].filter(Boolean);
+  $('#entryAuto').textContent = bits.length ? `Filled in for you: ${bits.join(' · ')}.` : '';
+}
+
+$('#eMc').addEventListener('change', refreshEntryDefaults);
+$('#eMo').addEventListener('change', refreshEntryDefaults);
+
+$('#eClear').addEventListener('click', () => {
+  ['eMc', 'eMo', 'eProd', 'eRpm', 'eTarget', 'eKet'].forEach((id) => { $('#' + id).value = ''; });
+  entryAuto = {};
+  $('#entryAuto').textContent = '';
+  $('#entryResult').innerHTML = '';
+});
+
+$('#entryForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const out = $('#entryResult');
+  const btn = $('#eSave');
+  btn.disabled = true;
+
+  const body = {
+    tgl: $('#eTgl').value, shift: $('#eShift').value, no_mc: $('#eMc').value.trim(),
+    mo: $('#eMo').value.trim(), produksi: $('#eProd').value,
+    rpm: $('#eRpm').value, rpm_target: $('#eTarget').value,
+    ket_bb: $('#eKet').value, ...entryAuto
+  };
+
+  try {
+    const res = await fetch('/api/entry', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Could not save');
+
+    out.innerHTML = `<div class="result result-ok">
+        <div class="result-title">${d.inserted ? 'Added' : 'Updated'} ${esc(d.no_mc)} · ${esc(fmt.day(d.tgl))} shift ${esc(d.shift)}</div>
+        <p>${fmt.num(d.produksi)} m${d.ketik_prod ? ` · ${fmt.num(d.ketik_prod)} m per width` : ''}${
+          d.inserted ? '' : ' — a row for that machine, date and shift already existed and was replaced.'}</p>
+      </div>`;
+
+    // Straight onto the dashboard, and the filter lists may have gained a value.
+    ['eProd', 'eKet'].forEach((id) => { $('#' + id).value = ''; });
+    await loadFilters();
+    $$('.picker').forEach((p) => p._sync?.());
+    await loadImportLog();
+  } catch (err) {
+    out.innerHTML = `<div class="result result-err"><div class="result-title">Not saved</div><p>${esc(err.message)}</p></div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * Import panel
  * ------------------------------------------------------------------ */
 
@@ -523,6 +648,195 @@ async function uploadFile(file) {
     drop.classList.remove('is-busy');
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Pabrik — the looms' own monitoring export
+ *
+ * Its own endpoints and its own database. Deliberately does not reuse the
+ * production filters: this data has different shifts, different fabric
+ * spellings and a different notion of output, and pretending otherwise would
+ * put two incompatible numbers side by side.
+ * ------------------------------------------------------------------ */
+
+const loomState = { sort: 'effic', dir: 'asc', search: '' };
+let loomRows = [];
+
+const loomApi = async (path, extra = {}) => {
+  const p = new URLSearchParams(extra);
+  const res = await fetch(`/api/loom/${path}?${p}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  return res.json();
+};
+
+async function loadPabrik() {
+  const ticket = takeTicket('pabrik');
+  const meta = await loomApi('meta');
+  if (!isCurrent('pabrik', ticket)) return;
+
+  const empty = !meta.range.rows;
+  $('#pabrikEmpty').hidden = !empty;
+  ['#pabrikStats', '#loomTable', '#chartLoomStops', '#chartLoomWaktu', '#chartLoomDaily']
+    .forEach((sel) => { const el = $(sel).closest('.card, .stats'); if (el) el.hidden = empty; });
+  await loadLoomLog();
+  if (empty) return;
+
+  const [sum, stops, daily, waktu, looms] = await Promise.all([
+    loomApi('summary'), loomApi('stops'), loomApi('trend', { by: 'day' }), loomApi('by-waktu'),
+    loomApi('looms', { sort: loomState.sort, dir: loomState.dir })
+  ]);
+  if (!isCurrent('pabrik', ticket)) return;
+
+  const cov = sum.coverage;
+  const dropped = cov.total - cov.full;
+  $('#pabrikStats').innerHTML = [
+    tile('Efficiency', fmt.pct(sum.effic), '', 'Running time ÷ total time'),
+    // Loom-hours, not elapsed hours: 116 looms in one eight-hour shift give
+    // 928 loom-hours, so a single shift can lose far more than eight.
+    tile('Stopped', fmt.int(sum.stop_hour), 'loom-h', `${fmt.int(sum.run_hour)} loom-h running`),
+    tile('Stops recorded', fmt.int(sum.stops), '', 'Counted by the looms'),
+    tile('Cloth', fmt.num(sum.meter), 'm', 'One width, as the loom measures it'),
+    // The range of what is actually counted, not of what was imported: days
+    // that hold only truncated records are excluded above, and a tile that
+    // named them anyway would disagree with the chart beside it.
+    tile('Looms reporting', fmt.int(sum.looms), '', `${sum.min_date} → ${sum.max_date}`),
+    tile('Shifts used', fmt.int(cov.full), '',
+      dropped ? `${fmt.int(dropped)} partial records left out, up to ${meta.range.max_date}`
+              : 'all records complete')
+  ].join('');
+
+  const totalMin = stops.reduce((t, r) => t + Number(r.minutes), 0);
+  barChart($('#chartLoomStops'), stops, {
+    max: 12,
+    value: (d) => Number(d.minutes),
+    format: (v) => fmt.int(v / 60) + ' h',
+    labelWidth: 92,
+    max: 12,
+    tipRows: (d) => [
+      ['Time lost', fmt.int(Number(d.minutes) / 60) + ' loom-h'],
+      ['Stops', fmt.int(d.count)],
+      ['Average each', fmt.one(Number(d.minutes) / Number(d.count)) + ' min'],
+      ['Share of downtime', fmt.pct(Number(d.minutes) / totalMin * 100)]
+    ]
+  });
+
+  lineChart($('#chartLoomDaily'), daily, {
+    y: (d) => Number(d.effic),
+    format: (v) => fmt.one(v),
+    unit: '%',
+    height: 240,
+    baseZero: false,
+    tipRows: (d) => [
+      ['Efficiency', fmt.pct(d.effic)],
+      ['Loom-shifts', fmt.int(d.looms)],
+      ['Cloth', fmt.num(d.meter) + ' m'],
+      ['Stopped', fmt.int(d.stop_hour) + ' loom-h'],
+      ['Stops', fmt.int(d.stops)]
+    ]
+  });
+
+  // Not every day has all three shifts in the exports loaded so far; say so
+  // rather than let a part-day look like a bad day.
+  const perDay = daily.map((d) => Number(d.looms));
+  const busiest = Math.max(...perDay, 0);
+  const partial = daily.filter((d) => Number(d.looms) < busiest * 0.7).length;
+  $('#loomDailyNote').textContent = partial
+    ? `${fmt.int(partial)} of ${fmt.int(daily.length)} days hold only part of a day — fewer shifts have been exported for them.`
+    : '';
+
+  barChart($('#chartLoomWaktu'), waktu, {
+    label: (d) => d.waktu,
+    value: (d) => Number(d.effic),
+    format: (v) => fmt.one(v) + '%',
+    labelWidth: 56,
+    tipRows: (d) => [
+      ['Loom-shifts', fmt.int(d.shifts)],
+      ['Cloth', fmt.num(d.meter) + ' m'],
+      ['Stopped', fmt.int(d.stop_hour) + ' loom-h']
+    ]
+  });
+
+  loomRows = looms;
+  paintLooms();
+}
+
+function paintLooms() {
+  const q = loomState.search.toLowerCase();
+  const shown = loomRows.filter((r) => !q
+    || r.loom.toLowerCase().includes(q) || (r.styles || '').toLowerCase().includes(q));
+
+  $('#loomTable tbody').innerHTML = shown.map((r) => {
+    const e = Number(r.effic);
+    const cls = e >= 85 ? 'dot-good' : e >= 75 ? 'dot-warning' : 'dot-critical';
+    return `<tr>
+      <td class="mc-name">${esc(r.loom)}</td>
+      <td class="muted">${esc(r.styles ?? '—')}</td>
+      <td class="num"><span class="dot ${cls}"></span>${fmt.pct(e)}</td>
+      <td class="num">${fmt.one(r.stop_hour)}</td>
+      <td class="num">${fmt.int(r.stops)}</td>
+      <td class="num muted">${fmt.int(r.weft)}</td>
+      <td class="num muted">${fmt.int(r.warp)}</td>
+      <td class="num">${fmt.int(r.rpm)}</td>
+      <td class="num">${fmt.num(r.meter)}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" class="muted" style="padding:20px;text-align:center">No looms match.</td></tr>`;
+}
+
+async function loadLoomLog() {
+  const rows = await loomApi('imports');
+  $('#loomLog tbody').innerHTML = rows.map((r) => `
+    <tr>
+      <td class="muted nowrap">${esc(r.at)}</td>
+      <td>${esc(r.file_name)}</td>
+      <td class="muted">${esc((r.periode ?? '').replace('Period(Shift) :', '').trim() || '—')}</td>
+      <td class="num">${fmt.int(r.rows_written)}</td>
+      <td><span class="pill pill-${r.status === 'ok' ? 'ok' : 'err'}">${esc(r.status)}</span>${r.message ? ` <span class="muted">${esc(r.message)}</span>` : ''}</td>
+    </tr>`).join('') || `<tr><td colspan="5" class="muted" style="padding:20px;text-align:center">Nothing imported yet.</td></tr>`;
+}
+
+async function uploadLoom(file) {
+  const drop = $('#loomDrop');
+  const out = $('#loomResult');
+  drop.classList.add('is-busy');
+  out.innerHTML = `<div class="result result-ok">Reading ${esc(file.name)}…</div>`;
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    const res = await fetch('/api/loom/import', { method: 'POST', body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Import failed');
+    out.innerHTML = `<div class="result result-ok">
+        <div class="result-title">${fmt.int(data.written)} loom-shifts imported from ${esc(data.file)}</div>
+        <p>${esc((data.periode ?? '').replace('Period(Shift) :', 'Period:'))}</p>
+      </div>`;
+    await loadPabrik();
+  } catch (err) {
+    out.innerHTML = `<div class="result result-err"><div class="result-title">Could not import ${esc(file.name)}</div><p>${esc(err.message)}</p></div>`;
+  } finally {
+    drop.classList.remove('is-busy');
+  }
+}
+
+$('#loomSearch').addEventListener('input', (e) => { loomState.search = e.target.value; paintLooms(); });
+$$('#loomTable th.sortable').forEach((th) => th.addEventListener('click', () => {
+  const key = th.dataset.lsort;
+  loomState.dir = loomState.sort === key && loomState.dir === 'asc' ? 'desc' : 'asc';
+  loomState.sort = key;
+  $$('#loomTable th').forEach((h) => h.classList.remove('is-sorted-asc', 'is-sorted-desc'));
+  th.classList.add(loomState.dir === 'asc' ? 'is-sorted-asc' : 'is-sorted-desc');
+  loadPabrik();
+}));
+$('#loomBrowse').addEventListener('click', () => $('#loomFile').click());
+$('#loomFile').addEventListener('change', (e) => {
+  if (e.target.files[0]) uploadLoom(e.target.files[0]);
+  e.target.value = '';
+});
+['dragenter', 'dragover'].forEach((ev) =>
+  $('#loomDrop').addEventListener(ev, (e) => { e.preventDefault(); $('#loomDrop').classList.add('is-over'); }));
+['dragleave', 'drop'].forEach((ev) =>
+  $('#loomDrop').addEventListener(ev, (e) => { e.preventDefault(); $('#loomDrop').classList.remove('is-over'); }));
+$('#loomDrop').addEventListener('drop', (e) => {
+  if (e.dataTransfer.files[0]) uploadLoom(e.dataTransfer.files[0]);
+});
 
 /* ------------------------------------------------------------------ *
  * Search over everything
@@ -634,15 +948,19 @@ async function loadFilters() {
   buildPicker($('#pType'),   'type',   f.types,    'types');
   buildPicker($('#pFabric'), 'fabric', f.fabrics,  'fabrics');
   buildPicker($('#pMo'),     'mo',     f.mos,      'orders');
+  fillLists(f);
 }
 
 async function refresh() {
   $('#btnExport').href = `/api/export.csv?${params()}`;
+  $('#btnExportXlsx').href = `/api/export.xlsx?${params()}`;
   syncFilterSummary();
   if (state.tab === 'production') {
     await Promise.all([loadSummary(), loadCharts(), loadMachines(), loadOrderInfo()]);
   } else if (state.tab === 'quality') {
     await loadQuality();
+  } else if (state.tab === 'pabrik') {
+    await loadPabrik();
   } else {
     await loadImportLog();
   }
@@ -667,7 +985,11 @@ function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${name}`));
   // Machine-level filters mean nothing on the import screen.
-  $('#filterBar').classList.toggle('is-hidden', name === 'import');
+  $('#filterBar').classList.toggle('is-hidden', name === 'import' || name === 'pabrik');
+  // The header range describes the daily report; on Pabrik it would be the
+  // wrong dataset's dates, so it steps aside and the panel states its own.
+  $('#dataRange').hidden = name === 'pabrik';
+  $('#gsearch').hidden = name === 'pabrik';
   $$('.field[data-pick]').forEach((f) => {
     const onlyOrderFilters = name === 'quality';
     f.style.display = onlyOrderFilters && !['fabric', 'mo'].includes(f.dataset.pick) ? 'none' : '';

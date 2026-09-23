@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS saldo (
   imported_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Daily capacity from the monthly efficiency sheet: what the mill would have
+-- woven that day at 100% efficiency. Only the sheet's own TOTAL column is
+-- taken — its eight per-type bands sum to a slightly different figure because
+-- the total is computed from its own average pick, and mixing the two would
+-- give two different answers to the same question.
+CREATE TABLE IF NOT EXISTS daily_capacity (
+  tgl         date PRIMARY KEY,
+  prod        numeric,   -- actual, kept only to verify the row lines up
+  prod100     numeric,   -- output at 100% efficiency
+  pick_rata2  numeric,
+  eff_pct     numeric,
+  source_file text,
+  imported_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Order header from the daily report sheets: who it is for, how much was
 -- ordered, how much has been woven so far and what is left. Keyed on the order,
 -- holding whichever daily sheet is most recent (`as_of`).
