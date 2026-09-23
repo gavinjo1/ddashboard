@@ -626,14 +626,18 @@ function sourceRow(r) {
   const shift = r.shift ?? '';
   const type = r.type_mc ?? '';
   return [
-    r.tgl,
+    null,                                               // TGL, written below
     `${shift}${ser}`,                                   // ID PERSHIFT
     `${ser}${r.mo ?? ''}${type}`,                       // ID LAP MO
     `${type}${ser}`,                                    // ID RPM REAL
     `${r.kelompok_mesin ?? ''}${shift}${ser}`,          // ID KELOMPOK MESIN
     `${r.no_mc ?? ''}${shift}${ser}`,                   // ID LAY OUT
     `${r.ket_bb ?? ''}${type}${ser}`,                   // ID BB
-    shift, r.no_mc, r.mo, r.kode_kain, type, r.kelompok_mesin,
+    shift, r.no_mc,
+    // The source writes a numeric 0 for a machine with no order, and the
+    // importer keeps it as text; put the number back.
+    r.mo === '0' ? 0 : r.mo,
+    r.kode_kain, type, r.kelompok_mesin,
     r.jml_kain, r.rpm, null,                            // EFF is empty in the source too
     r.produksi, r.hit_rpm, r.rpm_target, r.ketik_rpm, r.ketik_prod, r.ket_bb
   ];
@@ -657,6 +661,23 @@ async function exportRows(q) {
 app.get('/api/export.xlsx', (req, res) => send(res, async () => {
   const rows = await exportRows(req.query);
   const sheet = XLSX.utils.aoa_to_sheet([SOURCE_HEADERS, ...rows.map(sourceRow)]);
+
+  // The date column is written as Excel's own serial with a date format, not
+  // as a JS Date: converting a Date lands it a few seconds off midnight, which
+  // is invisible on screen but makes an equality test against a date fail.
+  const NA = 0x2a;   // SheetJS error code for #N/A
+
+  rows.forEach((r, i) => {
+    sheet[XLSX.utils.encode_cell({ r: i + 1, c: 0 })] =
+      { t: 'n', v: excelSerial(r.tgl), z: '[$-409]d\\-mmm\\-yy;@' };
+
+    // Every row without a fabric code carries a literal #N/A in the sheet —
+    // 72 of them, matching exactly the rows the importer reads as empty.
+    // Writing a blank instead would change how the workbook's lookups behave.
+    if (r.kode_kain == null) {
+      sheet[XLSX.utils.encode_cell({ r: i + 1, c: 10 })] = { t: 'e', v: NA };
+    }
+  });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, sheet, 'SOURCE DATA');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

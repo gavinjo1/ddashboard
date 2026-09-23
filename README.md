@@ -342,9 +342,22 @@ own — their formulas are untouched.
 Reproducing those sheets here instead would be the wrong way round: the
 workbook holds roughly 50,000 formulas across 28 sheets, and they already work.
 
-Checked against the original sheet for 1 September: **7,371 cells compared, 12
-differ**, all in the rows with no order (`MO = 0`), where the source carries a
-literal `0` and `#N/A` that the importer reads as empty.
+Three details decide whether a pasted column behaves like the original, and
+each was wrong at first:
+
+- `TGL` is written as Excel's own date serial with the sheet's date format,
+  not as text and not via a JS `Date`. Text breaks every date lookup; a `Date`
+  lands a few seconds off midnight, which looks right but fails an equality
+  test against a date.
+- `MO` for a machine with no order is a numeric `0`, as the sheet has it.
+- `KODE KAIN` for those rows is a literal `#N/A` error, not a blank. All 72
+  such rows in the workbook carry it, matching exactly the rows the importer
+  reads as empty, and a blank would change how the workbook's lookups behave.
+
+Checked against the original across all 22 days: **162,162 cells compared,
+1 differs**. That one is a stray space typed into `PRODUKSI` for A3 on
+17 September — the importer reads it as empty and the export writes it empty,
+rather than reproducing a typo.
 
 **Export CSV** stays a plain flat table for anything else.
 
