@@ -16,7 +16,7 @@ const GRADE_COLOURS = {
 
 const state = {
   from: '', to: '',
-  shift: [], group: [], type: [], fabric: [], mo: [],
+  shift: [], jam: [], group: [], type: [], fabric: [], mo: [],
   sort: 'produksi', dir: 'desc',
   dim: 'group',
   search: '',
@@ -27,7 +27,7 @@ function params() {
   const p = new URLSearchParams();
   if (state.from) p.set('from', state.from);
   if (state.to) p.set('to', state.to);
-  for (const k of ['shift', 'group', 'type', 'fabric', 'mo']) {
+  for (const k of ['shift', 'jam', 'group', 'type', 'fabric', 'mo']) {
     if (state[k].length) p.set(k, state[k].join(','));
   }
   return p;
@@ -50,8 +50,19 @@ const api = async (path, extra = {}) => {
   const p = params();
   for (const [k, v] of Object.entries(extra)) p.set(k, v);
   const res = await fetch(`/api/${path}?${p}`);
+  if (res.status === 401) return toLogin();
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res.json();
+};
+
+/**
+ * A session lasts a working day, so it can lapse with the tab still open.
+ * Returns a promise that never settles: callers are mid-render, and letting
+ * them carry on would paint an empty dashboard over the redirect.
+ */
+const toLogin = () => {
+  location.replace('login.html');
+  return new Promise(() => {});
 };
 
 /* ------------------------------------------------------------------ *
@@ -431,6 +442,7 @@ async function openMachine(no) {
     <tr>
       <td>${esc(fmt.day(r.date))}</td>
       <td>${esc(r.shift)}</td>
+      <td class="hours">${r.jam_mulai ? esc(`${r.jam_mulai}–${r.jam_selesai ?? ''}`) : ''}</td>
       <td class="muted">${esc(r.mo ?? '—')}</td>
       <td class="muted">${esc(r.kode_kain ?? '—')}</td>
       <td class="num">${r.pick == null ? '—' : fmt.num(r.pick)}</td>
@@ -438,6 +450,7 @@ async function openMachine(no) {
       <td class="num">${fmt.num(r.rpm_target)}</td>
       <td class="num">${fmt.num(r.produksi)}</td>
       <td>${esc(r.ket_bb ?? '')}</td>
+      <td class="muted">${esc(r.edited_by ?? '')}</td>
     </tr>`).join('');
   $('#drawer').showModal();
 }
@@ -505,8 +518,37 @@ async function loadQuality() {
  * ------------------------------------------------------------------ */
 
 let entryAuto = {};
+/** The mill's three shift windows, as the server defines them. */
+let windows = [];
+
+/** The pair of times the form is currently offering, or nulls. */
+function entryHours() {
+  const slot = $('#eJamSlot').value;
+  if (slot === 'custom') {
+    return { jam_mulai: $('#eJamMulai').value, jam_selesai: $('#eJamSelesai').value };
+  }
+  const w = windows.find((x) => x.value === slot);
+  return w ? { jam_mulai: w.start, jam_selesai: w.end } : { jam_mulai: '', jam_selesai: '' };
+}
+
+/** Picks the window whose times match, so a remembered pair shows as itself. */
+function setEntryHours(start, end) {
+  const w = windows.find((x) => x.start === start && x.end === end);
+  $('#eJamSlot').value = w ? w.value : (start ? 'custom' : '');
+  $('#eJamMulai').value = start || '';
+  $('#eJamSelesai').value = end || '';
+  $('#eJamCustom').hidden = $('#eJamSlot').value !== 'custom';
+}
 
 function fillLists(f) {
+  // Rebuilt with the rest of the reference data so it cannot drift from the
+  // windows the filter uses.
+  const keep = $('#eJamSlot').value;
+  $('#eJamSlot').innerHTML = ['<option value="">—</option>',
+    ...(f.windows ?? []).map((w) => `<option value="${esc(w.value)}">${esc(w.label)}</option>`),
+    '<option value="custom">Lain-lain…</option>'].join('');
+  $('#eJamSlot').value = keep;
+
   $('#dlMachines').innerHTML = f.machines.map((m) => `<option value="${esc(m)}">`).join('');
   $('#dlOrders').innerHTML = f.mos.filter((m) => m !== '0')
     .map((m) => `<option value="${esc(m)}">`).join('');
@@ -519,8 +561,14 @@ async function refreshEntryDefaults() {
   if (!no_mc && !mo) { entryAuto = {}; $('#entryAuto').textContent = ''; return; }
 
   const ticket = takeTicket('entryDefaults');
-  const d = await api('entry/defaults', { no_mc, mo });
+  const d = await api('entry/defaults', { no_mc, mo, shift: $('#eShift').value });
   if (!isCurrent('entryDefaults', ticket)) return;
+
+  // The hours are re-set most weeks, so the last ones used for this shift are
+  // a starting point, not a rule — typed hours are never overwritten.
+  if (d.hours && !$('#eJamSlot').value) {
+    setEntryHours(d.hours.jam_mulai, d.hours.jam_selesai);
+  }
 
   entryAuto = {
     type_mc: d.machine?.type_mc ?? null,
@@ -548,9 +596,20 @@ async function refreshEntryDefaults() {
 
 $('#eMc').addEventListener('change', refreshEntryDefaults);
 $('#eMo').addEventListener('change', refreshEntryDefaults);
+// Changing shift changes which hours apply, so drop the old pair and re-ask.
+$('#eShift').addEventListener('change', () => {
+  setEntryHours('', '');
+  refreshEntryDefaults();
+});
+$('#eJamSlot').addEventListener('change', () => {
+  const slot = $('#eJamSlot').value;
+  $('#eJamCustom').hidden = slot !== 'custom';
+  if (slot !== 'custom') { $('#eJamMulai').value = ''; $('#eJamSelesai').value = ''; }
+});
 
 $('#eClear').addEventListener('click', () => {
   ['eMc', 'eMo', 'eProd', 'eRpm', 'eTarget', 'eKet'].forEach((id) => { $('#' + id).value = ''; });
+  // Hours stay: the next row entered is nearly always the same shift.
   entryAuto = {};
   $('#entryAuto').textContent = '';
   $('#entryResult').innerHTML = '';
@@ -566,6 +625,7 @@ $('#entryForm').addEventListener('submit', async (e) => {
     tgl: $('#eTgl').value, shift: $('#eShift').value, no_mc: $('#eMc').value.trim(),
     mo: $('#eMo').value.trim(), produksi: $('#eProd').value,
     rpm: $('#eRpm').value, rpm_target: $('#eTarget').value,
+    ...entryHours(),
     ket_bb: $('#eKet').value, ...entryAuto
   };
 
@@ -573,12 +633,15 @@ $('#entryForm').addEventListener('submit', async (e) => {
     const res = await fetch('/api/entry', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
+    if (res.status === 401) return toLogin();
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'Could not save');
 
     out.innerHTML = `<div class="result result-ok">
         <div class="result-title">${d.inserted ? 'Added' : 'Updated'} ${esc(d.no_mc)} · ${esc(fmt.day(d.tgl))} shift ${esc(d.shift)}</div>
         <p>${fmt.num(d.produksi)} m${d.ketik_prod ? ` · ${fmt.num(d.ketik_prod)} m per width` : ''}${
+          d.jam_mulai ? ` · ${esc(d.jam_mulai)}–${esc(d.jam_selesai ?? '')}` : ''}${
+          d.edited_by ? ` · oleh ${esc(d.edited_by)}` : ''}${
           d.inserted ? '' : ' — a row for that machine, date and shift already existed and was replaced.'}</p>
       </div>`;
 
@@ -607,8 +670,9 @@ async function loadImportLog() {
       <td class="muted">${esc(r.sheet_name ?? '—')}</td>
       <td class="num">${fmt.int(r.rows_written)}</td>
       <td class="num">${r.rows_skipped || '—'}</td>
+      <td class="muted">${esc(r.imported_by ?? '')}</td>
       <td><span class="pill pill-${r.status === 'ok' ? 'ok' : 'err'}">${esc(r.status)}</span>${r.message ? ` <span class="muted">${esc(r.message)}</span>` : ''}</td>
-    </tr>`).join('') || `<tr><td colspan="6" class="muted" style="padding:20px;text-align:center">Nothing imported yet.</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="7" class="muted" style="padding:20px;text-align:center">Nothing imported yet.</td></tr>`;
 }
 
 async function uploadFile(file) {
@@ -943,7 +1007,9 @@ async function loadFilters() {
   $('#fFrom').min = $('#fTo').min = f.range.min_date || '';
   $('#fFrom').max = $('#fTo').max = f.range.max_date || '';
 
+  windows = f.windows ?? [];
   buildPicker($('#pShift'),  'shift',  f.shifts,   'shifts');
+  buildPicker($('#pJam'),    'jam',    windows,    'windows');
   buildPicker($('#pGroup'),  'group',  f.groups,   'groups');
   buildPicker($('#pType'),   'type',   f.types,    'types');
   buildPicker($('#pFabric'), 'fabric', f.fabrics,  'fabrics');
@@ -1056,6 +1122,23 @@ drop.addEventListener('drop', (e) => {
 });
 
 window.addEventListener('scroll', hideTip, { passive: true });
+
+/* ------------------------------------------------------------------ *
+ * Sign-in
+ *
+ * Checked before the first query, so an expired session shows the sign-in
+ * page rather than a dashboard full of failed panels.
+ * ------------------------------------------------------------------ */
+
+const me = await fetch('/api/auth/me').then((r) => r.json()).catch(() => ({ user: null }));
+if (!me.user) await toLogin();
+
+$('#whoamiName').textContent = me.user.nama || me.user.username;
+$('#whoami').hidden = false;
+$('#btnLogout').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  location.replace('login.html');
+});
 
 await loadFilters();
 switchTab('production');

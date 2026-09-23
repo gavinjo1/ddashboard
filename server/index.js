@@ -7,10 +7,85 @@ import 'dotenv/config';
 import { query, pool } from './db.js';
 import { importBuffer, previewBuffer, isSupported } from './importer.js';
 import { loomRouter } from './loom-routes.js';
+import {
+  hashPassword, verifyPassword, setSession, clearSession,
+  readSession, requireLogin, noUsersYet
+} from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
+
+if (!process.env.SESSION_SECRET) {
+  console.error('SESSION_SECRET is not set — sign-in cannot work. Add it to .env.');
+  process.exit(1);
+}
+
+// Ahead of every route, so nothing under /api can be reached without a session.
+app.use(requireLogin);
+
+/* ------------------------------------------------------------------ *
+ * Accounts
+ *
+ * One account per person, because the point is to be able to say who
+ * entered a figure. Passwords are scrypt-hashed in auth.js.
+ * ------------------------------------------------------------------ */
+
+const USERNAME = /^[a-z0-9._-]{3,32}$/i;
+
+app.get('/api/auth/me', (req, res) => send(res, async () => {
+  const username = readSession(req);
+  if (!username) return res.json({ user: null, first_run: await noUsersYet() });
+  const { rows: [u] } = await query(
+    'SELECT username, nama FROM app_user WHERE username = $1', [username]);
+  // The account was removed while the cookie was still valid.
+  if (!u) { clearSession(res); return res.json({ user: null, first_run: await noUsersYet() }); }
+  res.json({ user: u, first_run: false });
+}));
+
+app.post('/api/auth/register', (req, res) => send(res, async () => {
+  const username = String(req.body?.username ?? '').trim().toLowerCase();
+  const nama = String(req.body?.nama ?? '').trim();
+  const password = String(req.body?.password ?? '');
+
+  if (!USERNAME.test(username)) {
+    return res.status(400).json({ error: 'Nama pengguna 3–32 karakter: huruf, angka, titik, garis.' });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Kata sandi minimal 8 karakter.' });
+  }
+
+  const { salt, hash } = await hashPassword(password);
+  try {
+    await query(
+      'INSERT INTO app_user (username, nama, pass_hash, pass_salt) VALUES ($1,$2,$3,$4)',
+      [username, nama || null, hash, salt]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Nama pengguna sudah dipakai.' });
+    throw err;
+  }
+  setSession(res, username);
+  res.json({ user: { username, nama: nama || null } });
+}));
+
+app.post('/api/auth/login', (req, res) => send(res, async () => {
+  const username = String(req.body?.username ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '');
+
+  const { rows: [u] } = await query(
+    'SELECT username, nama, pass_hash, pass_salt FROM app_user WHERE username = $1', [username]);
+
+  // Same message either way: a distinct "no such user" tells an outsider which
+  // names exist.
+  const ok = u && await verifyPassword(password, u.pass_salt, u.pass_hash);
+  if (!ok) return res.status(401).json({ error: 'Nama pengguna atau kata sandi salah.' });
+
+  await query('UPDATE app_user SET last_login = now() WHERE username = $1', [username]);
+  setSession(res, u.username);
+  res.json({ user: { username: u.username, nama: u.nama } });
+}));
+
+app.post('/api/auth/logout', (req, res) => { clearSession(res); res.json({ ok: true }); });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -35,6 +110,34 @@ const LIST_FILTERS = {
  * appended to the same statement; `dates: false` emits only the dimension
  * filters, which is what the previous-period comparison needs.
  */
+/* ------------------------------------------------------------------ *
+ * Shift windows
+ *
+ * The mill runs three: 07:00–15:00, 15:00–23:00, 23:00–07:00. The crew letter
+ * on a row is not the window — A/B/C rotate every Friday — so filtering by
+ * clock time has to go through the hours actually recorded on the row.
+ * ------------------------------------------------------------------ */
+
+const SHIFT_WINDOWS = [
+  { value: 'pagi',  label: '07:00–15:00', start: '07:00', end: '15:00' },
+  { value: 'siang', label: '15:00–23:00', start: '15:00', end: '23:00' },
+  { value: 'malam', label: '23:00–07:00', start: '23:00', end: '07:00' }
+];
+
+/**
+ * Which window a row belongs to, by whichever of 07:00 / 15:00 / 23:00 its
+ * start time is nearest. The boundaries are the midpoints between them, so a
+ * week that starts the morning shift at 06:30 or 07:30 still reads as pagi —
+ * which matters, because these hours are re-set most weeks.
+ *
+ * A row with no hours belongs to no window and is simply never matched.
+ */
+const shiftWindowSql = (prefix) => `CASE
+    WHEN ${prefix}jam_mulai >= TIME '03:00' AND ${prefix}jam_mulai < TIME '11:00' THEN 'pagi'
+    WHEN ${prefix}jam_mulai >= TIME '11:00' AND ${prefix}jam_mulai < TIME '19:00' THEN 'siang'
+    WHEN ${prefix}jam_mulai IS NOT NULL THEN 'malam'
+  END`;
+
 function buildFilters(q, { prefix = '', startAt = 0, dates = true } = {}) {
   const clauses = [];
   const params = [];
@@ -47,6 +150,11 @@ function buildFilters(q, { prefix = '', startAt = 0, dates = true } = {}) {
     const vals = String(q[key] ?? '').split(',').map((v) => v.trim()).filter(Boolean);
     if (vals.length) clauses.push(`${prefix}${col} = ANY(${bind(vals)})`);
   }
+
+  // Not in LIST_FILTERS: this one is a computed window, not a stored column.
+  const jam = String(q.jam ?? '').split(',').map((v) => v.trim()).filter(Boolean);
+  if (jam.length) clauses.push(`${shiftWindowSql(prefix)} = ANY(${bind(jam)})`);
+
   return { clauses, params };
 }
 
@@ -76,6 +184,11 @@ app.get('/api/filters', (req, res) => send(res, async () => {
   const { rows: [range] } = await query(
     `SELECT min(tgl)::text AS min_date, max(tgl)::text AS max_date, count(*)::int AS total FROM production`
   );
+  // How many rows carry hours: without them a window filter matches nothing,
+  // and the screen should say so rather than look broken.
+  const { rows: [h] } = await query(
+    'SELECT count(jam_mulai)::int AS with_hours FROM production');
+
   const col = async (c) =>
     (await query(`SELECT DISTINCT ${c} AS v FROM production WHERE ${c} IS NOT NULL ORDER BY 1`))
       .rows.map((r) => r.v);
@@ -96,7 +209,9 @@ app.get('/api/filters', (req, res) => send(res, async () => {
     types,
     machines: await col('no_mc'),
     fabrics:  await col('kode_kain'),
-    mos:      await col('mo')
+    mos:      await col('mo'),
+    windows:  SHIFT_WINDOWS,
+    with_hours: h.with_hours
   });
 }));
 
@@ -148,7 +263,7 @@ app.get('/api/summary', (req, res) => send(res, async () => {
  * sheet. It is only comparable with an unfiltered day, so it is served only
  * when nothing narrows the machines — see `capacityApplies`.
  */
-const NARROWING = ['shift', 'machine', 'group', 'type', 'fabric', 'mo'];
+const NARROWING = ['shift', 'machine', 'group', 'type', 'fabric', 'mo', 'jam'];
 const capacityApplies = (q) => !NARROWING.some((k) => String(q[k] ?? '').trim());
 
 app.get('/api/trend', (req, res) => send(res, async () => {
@@ -259,7 +374,9 @@ app.get('/api/machine/:no', (req, res) => send(res, async () => {
 
   const { rows } = await query(`
     SELECT p.tgl::text AS date, p.shift, p.mo, p.kode_kain, o.pick,
-           p.rpm, p.rpm_target, p.produksi, p.ket_bb
+           p.rpm, p.rpm_target, p.produksi, p.ket_bb, p.edited_by,
+           to_char(p.jam_mulai, 'HH24:MI')   AS jam_mulai,
+           to_char(p.jam_selesai, 'HH24:MI') AS jam_selesai
     FROM production p
     LEFT JOIN order_info o ON o.mo = p.mo AND o.as_of = p.tgl
     WHERE ${where}
@@ -501,7 +618,20 @@ app.get('/api/quality', (req, res) => send(res, async () => {
  * starting point and stays editable.
  */
 app.get('/api/entry/defaults', (req, res) => send(res, async () => {
-  const out = { machine: null, order: null };
+  const out = { machine: null, order: null, hours: null };
+
+  // Shift hours are re-set most weeks, so the form offers the last ones used
+  // for this shift rather than a fixed clock. Only rows that actually carry
+  // hours count, which means the pre-2026-09 backlog never answers.
+  if (req.query.shift) {
+    const { rows: [h] } = await query(`
+      SELECT to_char(jam_mulai, 'HH24:MI')   AS jam_mulai,
+             to_char(jam_selesai, 'HH24:MI') AS jam_selesai
+      FROM production
+      WHERE shift = $1 AND jam_mulai IS NOT NULL
+      ORDER BY tgl DESC LIMIT 1`, [String(req.query.shift).toUpperCase()]);
+    out.hours = h ?? null;
+  }
 
   if (req.query.no_mc) {
     const { rows: [m] } = await query(`
@@ -532,6 +662,20 @@ app.post('/api/entry', (req, res) => send(res, async () => {
   if (!['A', 'B', 'C'].includes(shift)) return res.status(400).json({ error: 'Shift must be A, B or C.' });
   if (!no_mc) return res.status(400).json({ error: 'Machine is required.' });
 
+  // Shift hours are optional — left empty the row simply carries none, which is
+  // how every row from before this field existed already reads.
+  const hour = (v) => {
+    const t = String(v ?? '').trim();
+    if (!t) return null;
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(t)) return false;
+    return t;
+  };
+  const jam_mulai = hour(b.jam_mulai);
+  const jam_selesai = hour(b.jam_selesai);
+  if (jam_mulai === false || jam_selesai === false) {
+    return res.status(400).json({ error: 'Jam shift harus format 24 jam, contoh 07:00.' });
+  }
+
   const num = {};
   for (const k of ENTRY_NUM) {
     const raw = b[k];
@@ -550,19 +694,24 @@ app.post('/api/entry', (req, res) => send(res, async () => {
   const { rows: [row] } = await query(`
     INSERT INTO production
       (tgl, shift, no_mc, mo, kode_kain, type_mc, kelompok_mesin, jml_kain,
-       rpm, rpm_target, hit_rpm, produksi, ketik_rpm, ketik_prod, ket_bb, source_file)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$9,$13,$14,'manual entry')
+       rpm, rpm_target, hit_rpm, produksi, ketik_rpm, ketik_prod, ket_bb, source_file,
+       jam_mulai, jam_selesai, edited_by)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$9,$13,$14,'manual entry',$15,$16,$17)
     ON CONFLICT (tgl, shift, no_mc) DO UPDATE SET
       mo = EXCLUDED.mo, kode_kain = EXCLUDED.kode_kain, type_mc = EXCLUDED.type_mc,
       kelompok_mesin = EXCLUDED.kelompok_mesin, jml_kain = EXCLUDED.jml_kain,
       rpm = EXCLUDED.rpm, rpm_target = EXCLUDED.rpm_target, hit_rpm = EXCLUDED.hit_rpm,
       produksi = EXCLUDED.produksi, ketik_rpm = EXCLUDED.ketik_rpm,
       ketik_prod = EXCLUDED.ketik_prod, ket_bb = EXCLUDED.ket_bb,
+      jam_mulai = EXCLUDED.jam_mulai, jam_selesai = EXCLUDED.jam_selesai,
+      edited_by = EXCLUDED.edited_by,
       source_file = 'manual entry', imported_at = now()
-    RETURNING (xmax = 0) AS inserted, tgl::text, shift, no_mc, produksi`,
+    RETURNING (xmax = 0) AS inserted, tgl::text, shift, no_mc, produksi, edited_by,
+              to_char(jam_mulai, 'HH24:MI') AS jam_mulai,
+              to_char(jam_selesai, 'HH24:MI') AS jam_selesai`,
     [tgl, shift, no_mc, b.mo || null, b.kode_kain || null, b.type_mc || null,
      b.kelompok_mesin || null, jml, num.rpm, num.rpm_target, hit_rpm, num.produksi,
-     ketik_prod, (b.ket_bb || '').trim() || null]);
+     ketik_prod, (b.ket_bb || '').trim() || null, jam_mulai, jam_selesai, req.user]);
 
   res.json({ ...row, ketik_prod, hit_rpm });
 }));
@@ -585,14 +734,15 @@ app.post('/api/import', upload.single('file'), (req, res) => send(res, async () 
     return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });
   }
   const only = req.body.sheets ? String(req.body.sheets).split(',').filter(Boolean) : null;
-  const results = await importBuffer(req.file.buffer, req.file.originalname, { only });
+  const results = await importBuffer(req.file.buffer, req.file.originalname,
+    { only, editedBy: req.user });
   res.json({ file: req.file.originalname, results });
 }));
 
 app.get('/api/imports', (req, res) => send(res, async () => {
   const { rows } = await query(
     `SELECT file_name, sheet_name, dataset, rows_read, rows_written, rows_skipped,
-            status, message, to_char(created_at, 'YYYY-MM-DD HH24:MI') AS at
+            status, message, imported_by, to_char(created_at, 'YYYY-MM-DD HH24:MI') AS at
      FROM import_log ORDER BY created_at DESC LIMIT 25`
   );
   res.json(rows);
@@ -613,7 +763,11 @@ app.get('/api/imports', (req, res) => send(res, async () => {
 
 const SOURCE_HEADERS = ['TGL', 'ID PERSHIFT', 'ID LAP MO', 'ID RPM REAL', 'ID KELOMPOK MESIN',
   'ID LAY OUT', 'ID BB', 'SHIFT', 'NO MC', 'MO', 'KODE KAIN', 'TYPE MC', 'KELOMPOK MESIN',
-  'JML KAIN', 'RPM', 'EFF', 'PRODUKSI', 'HIT RPM', 'RPM TARGET', 'KETIK RPM', 'KETIK PROD', 'KET BB'];
+  'JML KAIN', 'RPM', 'EFF', 'PRODUKSI', 'HIT RPM', 'RPM TARGET', 'KETIK RPM', 'KETIK PROD', 'KET BB',
+  // Appended after column V, never inserted among it: the workbook's formulas
+  // address SOURCE DATA by column, so A:V has to stay exactly as it was.
+  // Rows written before these fields existed leave all three empty.
+  'JAM MULAI', 'JAM SELESAI', 'DIINPUT OLEH'];
 
 /** Excel's own day number, which the ID columns are built from. */
 const excelSerial = (iso) => {
@@ -639,7 +793,8 @@ function sourceRow(r) {
     r.mo === '0' ? 0 : r.mo,
     r.kode_kain, type, r.kelompok_mesin,
     r.jml_kain, r.rpm, null,                            // EFF is empty in the source too
-    r.produksi, r.hit_rpm, r.rpm_target, r.ketik_rpm, r.ketik_prod, r.ket_bb
+    r.produksi, r.hit_rpm, r.rpm_target, r.ketik_rpm, r.ketik_prod, r.ket_bb,
+    r.jam_mulai, r.jam_selesai, r.edited_by
   ];
 }
 
@@ -650,6 +805,9 @@ async function exportRows(q) {
     SELECT p.tgl::text AS tgl, p.shift, p.no_mc, p.mo, p.kode_kain, p.type_mc,
            p.kelompok_mesin, p.jml_kain, p.rpm, p.rpm_target, p.hit_rpm,
            p.produksi, p.ketik_rpm, p.ketik_prod, p.ket_bb, o.pick,
+           p.edited_by,
+           to_char(p.jam_mulai, 'HH24:MI')   AS jam_mulai,
+           to_char(p.jam_selesai, 'HH24:MI') AS jam_selesai,
            t.band AS kelompok_layout, t.description AS nama_mesin
     FROM production p
     LEFT JOIN machine_type t ON t.type_mc = p.type_mc
@@ -700,7 +858,10 @@ app.get('/api/export.csv', (req, res) => send(res, async () => {
   const { rows } = await query(`
     SELECT p.tgl::text AS tgl, p.shift, p.no_mc, p.kelompok_mesin, p.type_mc,
            t.band AS kelompok_layout, t.description AS nama_mesin,
-           p.mo, p.kode_kain, o.pick, p.rpm, p.rpm_target, p.produksi, p.ket_bb
+           p.mo, p.kode_kain, o.pick, p.rpm, p.rpm_target, p.produksi, p.ket_bb,
+           to_char(p.jam_mulai, 'HH24:MI')   AS jam_mulai,
+           to_char(p.jam_selesai, 'HH24:MI') AS jam_selesai,
+           p.edited_by
     FROM production p
     LEFT JOIN machine_type t ON t.type_mc = p.type_mc
     LEFT JOIN order_info o ON o.mo = p.mo AND o.as_of = p.tgl
@@ -716,7 +877,8 @@ app.get('/api/export.csv', (req, res) => send(res, async () => {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const head = ['tgl', 'shift', 'no_mc', 'kelompok_mesin', 'type_mc', 'kelompok_layout',
-    'nama_mesin', 'mo', 'kode_kain', 'pick', 'rpm', 'rpm_target', 'produksi', 'ket_bb'];
+    'nama_mesin', 'mo', 'kode_kain', 'pick', 'rpm', 'rpm_target', 'produksi', 'ket_bb',
+    'jam_mulai', 'jam_selesai', 'edited_by'];
   const csv = [head.join(','), ...rows.map((r) => head.map((h) => cell(r[h])).join(','))].join('\n');
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');

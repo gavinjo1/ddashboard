@@ -23,6 +23,11 @@
   <div class="topbar-right">
     <div class="topbar-meta" id="dataRange"></div>
 
+    <div class="whoami" id="whoami" hidden>
+      <span class="whoami-name" id="whoamiName"></span>
+      <button class="linkish" type="button" id="btnLogout">Keluar</button>
+    </div>
+
     <div class="gsearch" id="gsearch">
       <input type="search" id="gsInput" class="gsearch-input" autocomplete="off"
              placeholder="Search customer, order, fabric, machine…"
@@ -53,6 +58,7 @@
     <input type="date" id="fTo">
   </label>
   <div class="field" data-pick="shift"><span>Shift</span><div class="picker" id="pShift"></div></div>
+  <div class="field" data-pick="jam"><span>Jam shift</span><div class="picker" id="pJam"></div></div>
   <div class="field" data-pick="group"><span>Machine group</span><div class="picker" id="pGroup"></div></div>
   <div class="field" data-pick="type"><span>Machine type</span><div class="picker" id="pType"></div></div>
   <div class="field" data-pick="fabric"><span>Fabric</span><div class="picker" id="pFabric"></div></div>
@@ -234,6 +240,14 @@
         <input type="date" id="eTgl" required></label>
       <label class="field"><span>Shift</span>
         <select id="eShift" required><option>A</option><option>B</option><option>C</option></select></label>
+      <label class="field"><span>Jam shift</span>
+        <select id="eJamSlot"></select></label>
+      <div class="field" id="eJamCustom" hidden><span>Mulai – selesai</span>
+        <div class="hours-pair">
+          <input type="time" id="eJamMulai" aria-label="Jam mulai">
+          <input type="time" id="eJamSelesai" aria-label="Jam selesai">
+        </div>
+      </div>
       <label class="field"><span>Machine</span>
         <input id="eMc" list="dlMachines" placeholder="A1" required></label>
       <label class="field"><span>Order</span>
@@ -298,7 +312,7 @@
       <div class="table-wrap">
         <table class="data" id="importLog">
           <thead>
-            <tr><th>When</th><th>File</th><th>Sheet</th><th class="num">Written</th><th class="num">Skipped</th><th>Status</th></tr>
+            <tr><th>When</th><th>File</th><th>Sheet</th><th class="num">Written</th><th class="num">Skipped</th><th>Oleh</th><th>Status</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -417,7 +431,7 @@
   <div class="table-wrap">
     <table class="data" id="drawerTable">
       <thead>
-        <tr><th>Date</th><th>Shift</th><th>Order</th><th>Fabric</th><th class="num">Pick</th><th class="num">RPM</th><th class="num">Target</th><th class="num">Output (m)</th><th>Note</th></tr>
+        <tr><th>Date</th><th>Shift</th><th>Jam</th><th>Order</th><th>Fabric</th><th class="num">Pick</th><th class="num">RPM</th><th class="num">Target</th><th class="num">Output (m)</th><th>Note</th><th>Diinput</th></tr>
       </thead>
       <tbody></tbody>
     </table>

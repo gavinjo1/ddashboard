@@ -38,6 +38,10 @@
 
 * { box-sizing: border-box; }
 
+/* Layout rules below set display, which outranks the UA rule behind the hidden
+   attribute — without this, `el.hidden = true` leaves the element on screen. */
+[hidden] { display: none !important; }
+
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -354,6 +358,9 @@ main { padding: 16px 20px 40px; }
   }
   .topbar-right { margin-left: 0; flex-basis: 100%; flex-direction: column-reverse; align-items: stretch; gap: 8px; }
   .topbar-meta { white-space: normal; }
+  /* Stacked, the name and Keluar would sit on top of each other; side by side
+     they stay one line and the button keeps a reachable tap target. */
+  .whoami { justify-content: space-between; }
   .gsearch-input { width: 100%; }
   .gsearch-panel { width: 100%; right: auto; left: 0; max-height: 60vh; }
 
@@ -657,6 +664,10 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 .entry .field input:focus-visible,
 .entry .field select:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
 .entry-wide { grid-column: span 2; }
+
+/* The two time boxes read as one value, so they share a cell. */
+.hours-pair { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hours-pair input { flex: 1 1 0; min-width: 0; }
 .entry-actions { display: flex; gap: 8px; }
 
 .btn-primary {
@@ -670,6 +681,9 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 @media (max-width: 860px) {
   .entry { grid-template-columns: 1fr 1fr; }
   .entry-wide { grid-column: span 2; }
+  /* Two time boxes in half a phone screen clip their own text — give the
+     pair the full row instead. */
+  #eJamCustom { grid-column: span 2; }
   .entry-actions { grid-column: span 2; }
   .entry-actions .btn { flex: 1; justify-content: center; }
 }
@@ -756,3 +770,19 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
   border-bottom: 1px solid var(--line);
 }
 .drawer-head h2 { font-size: 14px; }
+
+/* ------------------------------------------------------------------ *
+ * Signed-in user
+ * ------------------------------------------------------------------ */
+.whoami {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+.whoami-name { color: var(--ink-2); }
+
+/* Shift hours change most weeks, so the pair reads as one value. */
+.data .hours { color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }

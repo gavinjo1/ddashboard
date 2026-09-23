@@ -59,6 +59,32 @@ npm run setup            # creates both databases and their tables
 npm start                # http://localhost:3000
 ```
 
+`SESSION_SECRET` must be set in `.env` — the server refuses to start without
+it, because sign-in cookies are signed with it. Any long random string does;
+`.env.example` ships a placeholder. Changing it signs everyone out.
+
+## Signing in
+
+Every API route needs a session; only the two pages and the sign-in endpoints
+are reachable without one. The dashboard checks for a session before its first
+query, so an expired cookie shows the sign-in page rather than a dashboard of
+failed panels.
+
+Accounts are per person, not a shared password, because the point is to be able
+to say who entered a figure. Passwords are stored as a scrypt hash with a
+per-user salt; the plain text is never written anywhere, and a wrong username
+and a wrong password give the same message so an outsider cannot learn which
+names exist.
+
+While no account exists the sign-in page opens on **Daftar** so the first
+person is not locked out. **Registration stays open after that** — anyone who
+can reach the page can create an account. That is right for a mill LAN and
+wrong for the open internet; if this is ever published, close registration
+first.
+
+Sessions last twelve hours — one working day — and the cookie is `HttpOnly`
+and `SameSite=Lax`. Set `COOKIE_SECURE=1` when serving over HTTPS.
+
 Loading a loom export from the command line:
 
 ```bash
@@ -212,7 +238,7 @@ any width.
 | ≥ 1180px | Filters inline, three cards across |
 | 1000–1180px | Two cards across |
 | 860–1000px | Filters inline, charts stacked |
-| < 860px | Filters fold behind a button; one card across |
+| < 860px | Filters fold behind a button; one card across; entry form two columns |
 
 Below 860px the filter row runs to roughly 500px stacked — half a phone screen
 of controls before any data — so it collapses to a single button carrying the
@@ -223,6 +249,18 @@ first column pinned, and cells do not wrap: a wrapped
 Grid and flex items are given `min-width: 0`. Without it they refuse to shrink
 below their content, and a chart measured once at a wide size pins its card open
 and never shrinks back — which pushed the whole page sideways on a phone.
+
+`[hidden]` is forced to `display: none`. Nearly every rule here sets `display`,
+which outranks the browser's own rule for the attribute, so `el.hidden = true`
+silently did nothing — the sign-in card showed its **Nama lengkap** box while
+the **Masuk** tab was active.
+
+The sign-in card is a single column that centres at any width. The entry form
+is two columns below 860px, where the **Lain-lain…** pair of time boxes takes a
+full row: sharing a half-width cell on a phone clipped their own text. The
+machine drawer now carries eleven columns and scrolls sideways within itself,
+not the page. Checked at 375px and 768px: no horizontal page scroll on any tab,
+signed in or out.
 
 ## Efficiency target on the daily chart
 
@@ -339,6 +377,17 @@ Those are the keys every other sheet looks rows up by. Paste the export over
 `SOURCE DATA` and the daily sheets, `BULANAN` and `GRADE` recalculate on their
 own — their formulas are untouched.
 
+Three columns follow after `V`, never among it: `JAM MULAI`, `JAM SELESAI` and
+`DIINPUT OLEH`. The workbook addresses `SOURCE DATA` by column, so `A:V` has to
+stay exactly as it was — pasting only `A:V` therefore still works, and the
+extra columns are there for anyone who wants them. They are empty on every row
+written before those fields existed. The CSV export carries the same three as
+`jam_mulai`, `jam_selesai` and `edited_by`.
+
+Verified against the source workbook by value **and** cell type: 169,884 cells
+across `A:V`, one difference — a stray space typed into `PRODUKSI` for A3 on
+17 Sep, which is in the source and is deliberately not reproduced.
+
 Reproducing those sheets here instead would be the wrong way round: the
 workbook holds roughly 50,000 formulas across 28 sheets, and they already work.
 
@@ -376,6 +425,11 @@ under the form rather than applied silently:
 - **Machine group** and **target RPM** do drift, so the most recent value is
   offered and stays editable.
 
+**Shift hours** are picked per row from the three standard windows, or typed
+under **Lain-lain…**, because the mill re-sets them most weeks. The form offers
+the last hours used for that shift and clears them when the shift changes;
+leaving them empty is allowed.
+
 `HIT RPM` and `KETIK PROD` are derived the way the workbook derives them —
 `RPM × JML KAIN` and `PRODUKSI ÷ JML KAIN` — so a hand-entered row and an
 imported one cannot disagree.
@@ -384,6 +438,45 @@ Rows are keyed on date + shift + machine like any other, so saving twice
 updates rather than duplicates, and the form says which happened. They carry
 `source_file = 'manual entry'` so they can be told apart later. **A file import
 covering the same date, shift and machine will overwrite them.**
+
+## Filtering by shift hours
+
+The mill runs three windows — **07:00–15:00**, **15:00–23:00**, **23:00–07:00**
+— and the **Jam shift** filter selects by them. The crew letter on a row is not
+the window: A, B and C rotate every Friday, so "shift A" is the morning one
+week and the afternoon the next. Filtering by clock time therefore goes through
+the hours recorded on the row, not through the letter.
+
+A row is placed in whichever window its start time is nearest, with the
+boundaries at the midpoints — 03:00, 11:00 and 19:00. A week that starts the
+morning shift at 06:30 or 07:30 still reads as 07:00–15:00, which matters
+because these hours are re-set most weeks.
+
+**A row with no hours is in no window**, so it is never matched. Today that is
+every row imported before the field existed; they appear only when the filter
+is left on *All*. Like the other dimension filters, a window narrows the data,
+so the efficiency target band hides itself while one is on.
+
+On the entry form the same three windows are one dropdown choice, with
+**Lain-lain…** revealing two time boxes for a week that does not fit them. The
+list comes from the server, so the filter and the form cannot drift apart.
+
+## Who entered what
+
+Rows carry the signed-in username in `edited_by`, shown in the machine drawer
+and in both exports. Imports carry it too, in `import_log.imported_by` and on
+the production rows they write.
+
+An import re-writes every row in the file, so crediting all of them would put a
+name against months of figures nobody touched. **The stamp only moves when a
+value actually differs** — re-importing an unchanged workbook leaves the
+backlog blank, while a corrected row gets the name of whoever imported the
+correction. A hand-typed row is always stamped, since it was deliberately
+entered.
+
+The 7,722 rows loaded before any of this existed have no name and no hours, and
+stay that way in the dashboard and in every export unless something rewrites
+them. Manual entry is always stamped by design.
 
 ## Adding a new day
 

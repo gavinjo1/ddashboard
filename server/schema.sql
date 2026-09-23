@@ -48,6 +48,23 @@ CREATE TABLE IF NOT EXISTS grade (
 CREATE INDEX IF NOT EXISTS grade_tgl_idx ON grade (tgl);
 CREATE INDEX IF NOT EXISTS grade_mo_idx  ON grade (mo);
 
+-- Who may open the dashboard. Passwords are stored as a scrypt hash with a
+-- per-user salt; the plain text is never written anywhere.
+CREATE TABLE IF NOT EXISTS app_user (
+  username    text PRIMARY KEY,
+  nama        text,
+  pass_hash   text NOT NULL,
+  pass_salt   text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  last_login  timestamptz
+);
+
+-- Recorded from the new columns onwards. Rows imported before this existed
+-- keep NULL rather than being credited to whoever ran the first import after.
+ALTER TABLE production ADD COLUMN IF NOT EXISTS edited_by   text;
+ALTER TABLE production ADD COLUMN IF NOT EXISTS jam_mulai   time;
+ALTER TABLE production ADD COLUMN IF NOT EXISTS jam_selesai time;
+
 -- Opening balance per order, from the rows in the source sheet whose date
 -- column reads SALDO instead of a date: production booked against that order
 -- before this report period began.
@@ -135,5 +152,8 @@ CREATE TABLE IF NOT EXISTS import_log (
   rows_skipped integer     NOT NULL DEFAULT 0,
   status       text        NOT NULL,
   message      text,
-  created_at   timestamptz NOT NULL DEFAULT now()
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  imported_by  text
 );
+
+ALTER TABLE import_log ADD COLUMN IF NOT EXISTS imported_by text;

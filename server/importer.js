@@ -627,14 +627,27 @@ function dedupe(records, keyOf) {
   return [...seen.values()];
 }
 
-async function upsert(client, dataset, records, sourceFile) {
+async function upsert(client, dataset, records, sourceFile, editedBy = null) {
   if (!records.length) return 0;
 
   const cols = dataset === 'production' ? PROD_COLS : GRADE_COLS;
   const table = dataset === 'production' ? 'production' : 'grade';
   const conflict = dataset === 'production' ? '(tgl, shift, no_mc)' : '(tgl, mo, kode_kain)';
-  const all = [...cols, 'source_file'];
+  // Only production carries an editor. A row imported before sign-in existed
+  // keeps NULL unless this run actually rewrites it.
+  const credited = dataset === 'production';
+  const all = [...cols, 'source_file', ...(credited ? ['edited_by'] : [])];
   const updates = cols.filter((c) => !conflict.includes(c));
+
+  // Re-importing the same workbook re-writes every row it contains. Crediting
+  // the importer for all of them would put a name against months of figures
+  // they never touched, so the stamp only moves when a value actually differs;
+  // an unchanged row keeps whatever it had, which for the backlog is nothing.
+  const stamp = credited
+    ? `CASE WHEN (${updates.map((c) => `${table}.${c}`).join(', ')})
+              IS DISTINCT FROM (${updates.map((c) => `EXCLUDED.${c}`).join(', ')})
+            THEN EXCLUDED.edited_by ELSE ${table}.edited_by END`
+    : null;
 
   let inserted = 0;
   let updated = 0;
@@ -644,7 +657,7 @@ async function upsert(client, dataset, records, sourceFile) {
     const values = [];
     const tuples = batch.map((rec, r) => {
       const ph = all.map((_, c) => `$${r * all.length + c + 1}`);
-      values.push(...cols.map((c) => rec[c]), sourceFile);
+      values.push(...cols.map((c) => rec[c]), sourceFile, ...(credited ? [editedBy] : []));
       return `(${ph.join(',')})`;
     });
 
@@ -656,6 +669,7 @@ async function upsert(client, dataset, records, sourceFile) {
       ON CONFLICT ${conflict} DO UPDATE SET
         ${updates.map((c) => `${c} = EXCLUDED.${c}`).join(', ')},
         source_file = EXCLUDED.source_file,
+        ${credited ? `edited_by = ${stamp},` : ''}
         imported_at = now()
       RETURNING (xmax = 0) AS is_new`;
     const res = await client.query(sql, values);
@@ -666,9 +680,10 @@ async function upsert(client, dataset, records, sourceFile) {
 
 /**
  * Import every recognisable sheet in a workbook.
- * `only` limits the run to named sheets; `dataset` forces the target table.
+ * `only` limits the run to named sheets; `dataset` forces the target table;
+ * `editedBy` is the signed-in user credited on every production row written.
  */
-export async function importBuffer(buffer, fileName, { only = null, dataset = null } = {}) {
+export async function importBuffer(buffer, fileName, { only = null, dataset = null, editedBy = null } = {}) {
   const wb = readWorkbook(buffer, fileName);
   const results = [];
   const client = await pool.connect();
@@ -695,12 +710,12 @@ export async function importBuffer(buffer, fileName, { only = null, dataset = nu
 
       try {
         await client.query('BEGIN');
-        const { inserted, updated, written } = await upsert(client, found.dataset, unique, fileName);
+        const { inserted, updated, written } = await upsert(client, found.dataset, unique, fileName, editedBy);
         const saldoWritten = await upsertSaldo(client, saldo, fileName);
         await client.query(
-          `INSERT INTO import_log (file_name, sheet_name, dataset, rows_read, rows_written, rows_skipped, status)
-           VALUES ($1,$2,$3,$4,$5,$6,'ok')`,
-          [fileName, name, found.dataset, records.length + skipped, written, skipped]
+          `INSERT INTO import_log (file_name, sheet_name, dataset, rows_read, rows_written, rows_skipped, status, imported_by)
+           VALUES ($1,$2,$3,$4,$5,$6,'ok',$7)`,
+          [fileName, name, found.dataset, records.length + skipped, written, skipped, editedBy]
         );
         await client.query('COMMIT');
         results.push({
@@ -712,9 +727,9 @@ export async function importBuffer(buffer, fileName, { only = null, dataset = nu
       } catch (err) {
         await client.query('ROLLBACK');
         await client.query(
-          `INSERT INTO import_log (file_name, sheet_name, dataset, status, message)
-           VALUES ($1,$2,$3,'error',$4)`,
-          [fileName, name, found.dataset, err.message]
+          `INSERT INTO import_log (file_name, sheet_name, dataset, status, message, imported_by)
+           VALUES ($1,$2,$3,'error',$4,$5)`,
+          [fileName, name, found.dataset, err.message, editedBy]
         ).catch(() => {});
         results.push({ sheet: name, dataset: found.dataset, status: 'error', message: err.message });
       }

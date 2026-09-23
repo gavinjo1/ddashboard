@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Masuk — Machine Report</title>
+<link rel="stylesheet" href="app.css">
+<style>
+/* Only this page uses these, so they live here rather than in app.css. */
+.auth-plane {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 28px 26px 24px;
+}
+.auth-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+.auth-brand .brand-mark {
+  width: 12px; height: 12px; border-radius: 3px; background: var(--series-1);
+}
+.auth-brand b { font-weight: 600; letter-spacing: -.01em; }
+
+.auth-switch { display: flex; gap: 2px; margin-bottom: 20px; }
+.auth-switch button {
+  flex: 1;
+  padding: 7px 0;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid var(--line-soft);
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.auth-switch button.is-active { color: var(--ink); border-bottom-color: var(--series-1); }
+
+.auth-card .field { margin-bottom: 14px; }
+.auth-card input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.auth-card input:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
+.auth-card .btn-primary { width: 100%; justify-content: center; margin-top: 4px; }
+
+.auth-msg { margin: 14px 0 0; font-size: 12.5px; min-height: 1em; }
+.auth-msg.is-err { color: var(--critical); }
+.auth-msg.is-ok  { color: var(--good-text); }
+.auth-hint { margin: 18px 0 0; color: var(--ink-muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="auth-plane">
+  <div class="auth-card">
+    <div class="auth-brand"><span class="brand-mark"></span><b>Machine Report</b></div>
+
+    <div class="auth-switch" role="tablist">
+      <button type="button" class="is-active" id="tabLogin" role="tab">Masuk</button>
+      <button type="button" id="tabRegister" role="tab">Daftar</button>
+    </div>
+
+    <form id="authForm" autocomplete="on">
+      <label class="field" id="fNama" hidden><span>Nama lengkap</span>
+        <input id="aNama" autocomplete="name" placeholder="opsional"></label>
+
+      <label class="field"><span>Nama pengguna</span>
+        <input id="aUser" autocomplete="username" required
+               pattern="[A-Za-z0-9._-]{3,32}" placeholder="mis. budi.s"></label>
+
+      <label class="field"><span>Kata sandi</span>
+        <input id="aPass" type="password" autocomplete="current-password" required
+               minlength="8" placeholder="minimal 8 karakter"></label>
+
+      <button class="btn btn-primary" type="submit" id="aSubmit">Masuk</button>
+    </form>
+
+    <p class="auth-msg" id="aMsg" role="status" aria-live="polite"></p>
+    <p class="auth-hint" id="aHint"></p>
+  </div>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+let mode = 'login';
+
+const setMode = (next) => {
+  mode = next;
+  const reg = mode === 'register';
+  $('tabLogin').classList.toggle('is-active', !reg);
+  $('tabRegister').classList.toggle('is-active', reg);
+  $('fNama').hidden = !reg;
+  $('aSubmit').textContent = reg ? 'Daftar' : 'Masuk';
+  $('aPass').autocomplete = reg ? 'new-password' : 'current-password';
+  $('aMsg').textContent = '';
+};
+
+$('tabLogin').onclick = () => setMode('login');
+$('tabRegister').onclick = () => setMode('register');
+
+const say = (text, kind) => {
+  const el = $('aMsg');
+  el.textContent = text;
+  el.className = `auth-msg ${kind ? `is-${kind}` : ''}`;
+};
+
+// Already signed in? Don't make them do it twice. And if nobody has an account
+// yet, open on the register form so the first person is not stuck.
+try {
+  const me = await fetch('/api/auth/me').then((r) => r.json());
+  if (me.user) location.replace('/');
+  else if (me.first_run) {
+    setMode('register');
+    $('aHint').textContent = 'Belum ada akun. Akun pertama yang dibuat akan jadi pemakai pertama.';
+  }
+} catch { /* offline: let them try anyway */ }
+
+$('authForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('aSubmit').disabled = true;
+  say('…');
+  try {
+    const res = await fetch(`/api/auth/${mode}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('aUser').value,
+        password: $('aPass').value,
+        nama: $('aNama').value
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) { say(data.error || 'Gagal.', 'err'); return; }
+    say('Berhasil, membuka dashboard…', 'ok');
+    location.replace('/');
+  } catch {
+    say('Tidak bisa menghubungi server.', 'err');
+  } finally {
+    $('aSubmit').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
