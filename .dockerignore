@@ -32,3 +32,6 @@ __pycache__
 coverage
 *.dump
 *.sql.gz
+
+# Backups never belong in an image.
+backups

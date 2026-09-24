@@ -50,6 +50,10 @@
 .auth-card input:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
 .auth-card .btn-primary { width: 100%; justify-content: center; margin-top: 4px; }
 
+.captcha-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.captcha-img { line-height: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.captcha-img svg { display: block; }
+
 .auth-msg { margin: 14px 0 0; font-size: 12.5px; min-height: 1em; }
 .auth-msg.is-err { color: var(--critical); }
 .auth-msg.is-ok  { color: var(--good-text); }
@@ -77,6 +81,15 @@
       <label class="field"><span>Kata sandi</span>
         <input id="aPass" type="password" autocomplete="current-password" required
                minlength="8" placeholder="minimal 8 karakter"></label>
+
+      <div class="field" id="fCaptcha" hidden><span>Ketik kode pada gambar</span>
+        <div class="captcha-row">
+          <div class="captcha-img" id="aCaptchaImg"></div>
+          <button type="button" class="linkish" id="aCaptchaNew" title="Ganti gambar">ganti</button>
+        </div>
+        <input id="aCaptcha" autocomplete="off" inputmode="latin" maxlength="8"
+               placeholder="5 huruf/angka">
+      </div>
 
       <button class="btn btn-primary" type="submit" id="aSubmit">Masuk</button>
     </form>
@@ -110,12 +123,30 @@ const say = (text, kind) => {
   el.className = `auth-msg ${kind ? `is-${kind}` : ''}`;
 };
 
+/* The challenge only appears once the server has seen enough failures from
+   this address to ask for it, so nobody types one on an ordinary morning. */
+let captchaId = null;
+
+async function loadCaptcha() {
+  try {
+    const c = await fetch('/api/auth/captcha').then((r) => (r.ok ? r.json() : null));
+    if (!c) return;
+    captchaId = c.id;
+    $('aCaptchaImg').innerHTML = c.svg;   // server-built SVG, no user input in it
+    $('fCaptcha').hidden = false;
+    $('aCaptcha').value = '';
+  } catch { /* leave it hidden; the server will say no again */ }
+}
+
+$('aCaptchaNew').onclick = loadCaptcha;
+
 // Already signed in? Don't make them do it twice. And if nobody has an account
 // yet, open on the register form so the first person is not stuck.
 try {
   const me = await fetch('/api/auth/me').then((r) => r.json());
   if (me.user) location.replace('/');
-  else if (me.first_run) {
+  else if (me.captcha_required) await loadCaptcha();
+  if (!me.user && me.first_run) {
     setMode('register');
     $('aHint').textContent = 'Belum ada akun. Akun pertama yang dibuat akan jadi pemakai pertama.';
   }
@@ -132,11 +163,18 @@ $('authForm').addEventListener('submit', async (e) => {
       body: JSON.stringify({
         username: $('aUser').value,
         password: $('aPass').value,
-        nama: $('aNama').value
+        nama: $('aNama').value,
+        captcha_id: captchaId,
+        captcha: $('aCaptcha').value
       })
     });
     const data = await res.json();
-    if (!res.ok) { say(data.error || 'Gagal.', 'err'); return; }
+    if (!res.ok) {
+      say(data.error || 'Gagal.', 'err');
+      // Each image is single use, so a new one is needed for the next try.
+      if (data.captcha_required) await loadCaptcha();
+      return;
+    }
     say('Berhasil, membuka dashboard…', 'ok');
     location.replace('/');
   } catch {

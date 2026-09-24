@@ -72,7 +72,7 @@ export function readSession(req) {
 
 /* ---- guard ---- */
 
-const OPEN = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/me']);
+const OPEN = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/me', '/api/auth/captcha']);
 
 /**
  * Guards the API only. Registered globally so it sits ahead of every route,
@@ -87,6 +87,26 @@ export function requireLogin(req, res, next) {
   if (!user) return res.status(401).json({ error: 'Belum masuk.' });
   req.user = user;
   next();
+}
+
+/* ---- roles ---- */
+
+const RANK = { viewer: 1, operator: 2, admin: 3 };
+
+/** Looks the role up per request, so a change takes effect without re-login. */
+export function requireRole(min) {
+  return async (req, res, next) => {
+    try {
+      const { rows: [u] } = await query(
+        'SELECT role FROM app_user WHERE username = $1', [req.user]);
+      if (!u) return res.status(401).json({ error: 'Belum masuk.' });
+      if ((RANK[u.role] ?? 0) < RANK[min]) {
+        return res.status(403).json({ error: 'Akun Anda tidak punya hak untuk tindakan ini.' });
+      }
+      req.role = u.role;
+      next();
+    } catch (err) { next(err); }
+  };
 }
 
 /** True while no account exists yet, so the first person can create one. */

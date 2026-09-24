@@ -7,9 +7,12 @@ import 'dotenv/config';
 import { query, pool } from './db.js';
 import { importBuffer, previewBuffer, isSupported } from './importer.js';
 import { loomRouter } from './loom-routes.js';
+import { send, AppError } from './errors.js';
+import { note, countOf, retryAfter, forget, limit } from './ratelimit.js';
+import { issueCaptcha, solveCaptcha } from './captcha.js';
 import {
   hashPassword, verifyPassword, setSession, clearSession,
-  readSession, requireLogin, noUsersYet
+  readSession, requireLogin, requireRole, noUsersYet
 } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,8 +24,44 @@ if (!process.env.SESSION_SECRET) {
   process.exit(1);
 }
 
+// Behind Caddy every request arrives from the proxy, so req.ip would be the
+// same container address for everybody and one attacker would rate-limit the
+// whole mill. TRUST_PROXY is the number of proxies in front (1 for Caddy).
+//
+// It is only safe because the app publishes on 127.0.0.1 and Caddy is the one
+// way in: reachable directly, anyone could forge X-Forwarded-For and dodge
+// every limit below.
+app.set('trust proxy', Number(process.env.TRUST_PROXY || 0));
+
+// A ceiling on everything, well above what clicking around produces — the
+// dashboard fires about a dozen requests per panel — but low enough that
+// scraping the whole history is not free.
+app.use('/api', limit({
+  windowMs: 60_000, max: 300, prefix: 'api',
+  message: 'Terlalu banyak permintaan. Tunggu sebentar.'
+}));
+
 // Ahead of every route, so nothing under /api can be reached without a session.
 app.use(requireLogin);
+
+/* ---- login bombing ----
+ *
+ * Three separate brakes, because they stop different attacks:
+ *   - per IP, a picture challenge then a hard stop: one host guessing many
+ *   - per username, across every IP: many hosts guessing one account
+ *   - the global limiter above: everything else
+ *
+ * Failures are counted, successes forgotten, so an ordinary typo costs
+ * nothing once the person gets in.
+ */
+const FAIL_WINDOW = 15 * 60 * 1000;
+const CAPTCHA_AFTER = 4;
+const IP_BLOCK_AFTER = 15;
+const USER_LOCK_AFTER = 8;
+
+const ipFailKey = (req) => `login-fail:${req.ip}`;
+const userFailKey = (u) => `login-user:${u}`;
+const captchaNeeded = (req) => countOf(ipFailKey(req), FAIL_WINDOW) >= CAPTCHA_AFTER;
 
 /* ------------------------------------------------------------------ *
  * Accounts
@@ -35,15 +74,34 @@ const USERNAME = /^[a-z0-9._-]{3,32}$/i;
 
 app.get('/api/auth/me', (req, res) => send(res, async () => {
   const username = readSession(req);
-  if (!username) return res.json({ user: null, first_run: await noUsersYet() });
+  if (!username) {
+    return res.json({
+      user: null,
+      first_run: await noUsersYet(),
+      captcha_required: captchaNeeded(req)
+    });
+  }
   const { rows: [u] } = await query(
-    'SELECT username, nama FROM app_user WHERE username = $1', [username]);
+    'SELECT username, nama, role FROM app_user WHERE username = $1', [username]);
   // The account was removed while the cookie was still valid.
   if (!u) { clearSession(res); return res.json({ user: null, first_run: await noUsersYet() }); }
   res.json({ user: u, first_run: false });
 }));
 
-app.post('/api/auth/register', (req, res) => send(res, async () => {
+app.get('/api/auth/captcha',
+  limit({ windowMs: 60_000, max: 30, prefix: 'captcha' }),
+  (req, res) => {
+    const c = issueCaptcha();
+    if (!c) return res.status(503).json({ error: 'Sedang sibuk, coba lagi sebentar.' });
+    res.json(c);
+  });
+
+app.post('/api/auth/register',
+  // Open registration plus a public address is an invitation to script account
+  // creation; this makes it tedious without getting in a real person's way.
+  limit({ windowMs: 60 * 60 * 1000, max: 5, prefix: 'register',
+          message: 'Terlalu banyak pendaftaran dari jaringan ini. Coba lagi nanti.' }),
+  (req, res) => send(res, async () => {
   const username = String(req.body?.username ?? '').trim().toLowerCase();
   const nama = String(req.body?.nama ?? '').trim();
   const password = String(req.body?.password ?? '');
@@ -57,37 +115,149 @@ app.post('/api/auth/register', (req, res) => send(res, async () => {
 
   const { salt, hash } = await hashPassword(password);
   try {
+    // Decided inside the statement rather than by a prior count, so two
+    // people registering at the same moment cannot both come out admin.
     await query(
-      'INSERT INTO app_user (username, nama, pass_hash, pass_salt) VALUES ($1,$2,$3,$4)',
+      `INSERT INTO app_user (username, nama, pass_hash, pass_salt, role)
+       VALUES ($1,$2,$3,$4,
+         CASE WHEN NOT EXISTS (SELECT 1 FROM app_user) THEN 'admin' ELSE 'viewer' END)`,
       [username, nama || null, hash, salt]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'Nama pengguna sudah dipakai.' });
     throw err;
   }
+  const { rows: [me] } = await query('SELECT role FROM app_user WHERE username = $1', [username]);
   setSession(res, username);
-  res.json({ user: { username, nama: nama || null } });
+  res.json({ user: { username, nama: nama || null, role: me.role } });
 }));
 
 app.post('/api/auth/login', (req, res) => send(res, async () => {
   const username = String(req.body?.username ?? '').trim().toLowerCase();
   const password = String(req.body?.password ?? '');
+  const ipKey = ipFailKey(req);
+  const userKey = userFailKey(username);
+
+  const tooMany = (key, msg) => {
+    const wait = retryAfter(key, FAIL_WINDOW);
+    res.setHeader('Retry-After', String(wait));
+    return res.status(429).json({ error: `${msg} Coba lagi dalam ${Math.ceil(wait / 60)} menit.` });
+  };
+
+  if (countOf(ipKey, FAIL_WINDOW) >= IP_BLOCK_AFTER) {
+    return tooMany(ipKey, 'Terlalu banyak percobaan masuk dari jaringan ini.');
+  }
+  // Counted across every address, so spreading the guessing over many hosts
+  // does not buy an attacker more tries at one account.
+  if (username && countOf(userKey, FAIL_WINDOW) >= USER_LOCK_AFTER) {
+    return tooMany(userKey, 'Akun ini dikunci sementara karena terlalu banyak percobaan.');
+  }
+
+  if (captchaNeeded(req) && !solveCaptcha(req.body?.captcha_id, req.body?.captcha)) {
+    return res.status(400).json({
+      error: 'Kode gambar salah atau sudah kedaluwarsa.',
+      captcha_required: true
+    });
+  }
 
   const { rows: [u] } = await query(
-    'SELECT username, nama, pass_hash, pass_salt FROM app_user WHERE username = $1', [username]);
+    'SELECT username, nama, role, pass_hash, pass_salt FROM app_user WHERE username = $1', [username]);
 
   // Same message either way: a distinct "no such user" tells an outsider which
   // names exist.
   const ok = u && await verifyPassword(password, u.pass_salt, u.pass_hash);
-  if (!ok) return res.status(401).json({ error: 'Nama pengguna atau kata sandi salah.' });
+  if (!ok) {
+    note(ipKey, FAIL_WINDOW);
+    if (username) note(userKey, FAIL_WINDOW);
+    return res.status(401).json({
+      error: 'Nama pengguna atau kata sandi salah.',
+      captcha_required: captchaNeeded(req)
+    });
+  }
+
+  // A person who gets in was not the attacker; clear their slate so an earlier
+  // typo does not follow them around for the next quarter of an hour.
+  forget(ipKey);
+  forget(userKey);
 
   await query('UPDATE app_user SET last_login = now() WHERE username = $1', [username]);
   setSession(res, u.username);
-  res.json({ user: { username: u.username, nama: u.nama } });
+  res.json({ user: { username: u.username, nama: u.nama, role: u.role } });
 }));
 
 app.post('/api/auth/logout', (req, res) => { clearSession(res); res.json({ ok: true }); });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+/* ------------------------------------------------------------------ *
+ * Account management
+ *
+ * Admin only. Two rails throughout: an admin cannot strip their own rights,
+ * and the last admin cannot be removed or demoted — either would leave the
+ * mill with an installation nobody can administer short of opening psql.
+ * ------------------------------------------------------------------ */
+
+const ROLES = ['viewer', 'operator', 'admin'];
+
+const adminCount = async () =>
+  (await query(`SELECT count(*)::int AS n FROM app_user WHERE role = 'admin'`)).rows[0].n;
+
+app.get('/api/admin/users', requireRole('admin'), (req, res) => send(res, async () => {
+  const { rows } = await query(
+    `SELECT username, nama, role,
+            to_char(created_at, 'YYYY-MM-DD HH24:MI') AS created_at,
+            to_char(last_login,  'YYYY-MM-DD HH24:MI') AS last_login
+     FROM app_user ORDER BY role DESC, username`);
+  res.json({ users: rows, me: req.user });
+}));
+
+app.patch('/api/admin/users/:username', requireRole('admin'), (req, res) => send(res, async () => {
+  const target = String(req.params.username).toLowerCase();
+  const role = String(req.body?.role ?? '');
+  if (!ROLES.includes(role)) throw new AppError('Peran tidak dikenal.');
+
+  if (target === req.user && role !== 'admin') {
+    throw new AppError('Anda tidak bisa menurunkan peran akun Anda sendiri. Minta admin lain.');
+  }
+  const { rows: [u] } = await query('SELECT role FROM app_user WHERE username = $1', [target]);
+  if (!u) throw new AppError('Akun tidak ditemukan.', 404);
+  if (u.role === 'admin' && role !== 'admin' && await adminCount() <= 1) {
+    throw new AppError('Ini satu-satunya admin. Angkat admin lain dulu.');
+  }
+
+  await query('UPDATE app_user SET role = $2 WHERE username = $1', [target, role]);
+  res.json({ username: target, role });
+}));
+
+app.delete('/api/admin/users/:username', requireRole('admin'), (req, res) => send(res, async () => {
+  const target = String(req.params.username).toLowerCase();
+  if (target === req.user) throw new AppError('Anda tidak bisa menghapus akun Anda sendiri.');
+
+  const { rows: [u] } = await query('SELECT role FROM app_user WHERE username = $1', [target]);
+  if (!u) throw new AppError('Akun tidak ditemukan.', 404);
+  if (u.role === 'admin' && await adminCount() <= 1) {
+    throw new AppError('Ini satu-satunya admin. Angkat admin lain dulu.');
+  }
+
+  // edited_by is plain text, not a reference, so the audit trail on every row
+  // this person entered survives the account being removed. That is deliberate.
+  await query('DELETE FROM app_user WHERE username = $1', [target]);
+  res.json({ deleted: target });
+}));
+
+app.post('/api/admin/users/:username/password', requireRole('admin'), (req, res) => send(res, async () => {
+  const target = String(req.params.username).toLowerCase();
+  const password = String(req.body?.password ?? '');
+  if (password.length < 8) throw new AppError('Kata sandi minimal 8 karakter.');
+
+  const { salt, hash } = await hashPassword(password);
+  const { rowCount } = await query(
+    'UPDATE app_user SET pass_hash = $2, pass_salt = $3 WHERE username = $1', [target, hash, salt]);
+  if (!rowCount) throw new AppError('Akun tidak ditemukan.', 404);
+
+  // The old session stays valid: the cookie is signed, not derived from the
+  // password. Deleting the account is the way to cut someone off immediately.
+  res.json({ username: target, reset: true });
+}));
 
 /* ------------------------------------------------------------------ *
  * Filters -> SQL
@@ -171,10 +341,6 @@ function whereFrom(q) {
  */
 const TYPE_LABEL = `COALESCE(NULLIF(concat_ws(' | ', t.band, t.description), ''), p.type_mc)`;
 
-const send = (res, fn) => fn().catch((err) => {
-  console.error(err);
-  res.status(500).json({ error: err.message });
-});
 
 /* ------------------------------------------------------------------ *
  * Reference data for the filter controls
@@ -652,7 +818,7 @@ app.get('/api/entry/defaults', (req, res) => send(res, async () => {
 
 const ENTRY_NUM = ['jml_kain', 'rpm', 'rpm_target', 'produksi'];
 
-app.post('/api/entry', (req, res) => send(res, async () => {
+app.post('/api/entry', requireRole('operator'), (req, res) => send(res, async () => {
   const b = req.body ?? {};
   const tgl = String(b.tgl ?? '').trim();
   const shift = String(b.shift ?? '').trim().toUpperCase();
@@ -720,7 +886,7 @@ app.post('/api/entry', (req, res) => send(res, async () => {
  * Import
  * ------------------------------------------------------------------ */
 
-app.post('/api/preview', upload.single('file'), (req, res) => send(res, async () => {
+app.post('/api/preview', requireRole('operator'), upload.single('file'), (req, res) => send(res, async () => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   if (!isSupported(req.file.originalname)) {
     return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });
@@ -728,7 +894,7 @@ app.post('/api/preview', upload.single('file'), (req, res) => send(res, async ()
   res.json({ file: req.file.originalname, sheets: previewBuffer(req.file.buffer, req.file.originalname) });
 }));
 
-app.post('/api/import', upload.single('file'), (req, res) => send(res, async () => {
+app.post('/api/import', requireRole('operator'), upload.single('file'), (req, res) => send(res, async () => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   if (!isSupported(req.file.originalname)) {
     return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });

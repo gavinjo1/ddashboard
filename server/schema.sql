@@ -59,6 +59,30 @@ CREATE TABLE IF NOT EXISTS app_user (
   last_login  timestamptz
 );
 
+-- Three levels, because the mill makes three distinctions and no more:
+--   viewer   reads the dashboard
+--   operator also imports files and types shifts in
+--   admin    also manages accounts
+-- There is deliberately no per-machine assignment: everyone at the mill reads
+-- the whole report, and modelling otherwise would mean a table and a UI for a
+-- distinction nobody there makes.
+ALTER TABLE app_user ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'viewer';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_user_role_check') THEN
+    ALTER TABLE app_user ADD CONSTRAINT app_user_role_check
+      CHECK (role IN ('viewer', 'operator', 'admin'));
+  END IF;
+END $$;
+
+-- An existing install has accounts but no roles yet, and the column default
+-- would leave every one of them a viewer with nobody able to promote anyone.
+-- The first account created gets the keys.
+UPDATE app_user SET role = 'admin'
+ WHERE username = (SELECT username FROM app_user ORDER BY created_at, username LIMIT 1)
+   AND NOT EXISTS (SELECT 1 FROM app_user WHERE role = 'admin');
+
 -- Recorded from the new columns onwards. Rows imported before this existed
 -- keep NULL rather than being credited to whoever ran the first import after.
 ALTER TABLE production ADD COLUMN IF NOT EXISTS edited_by   text;

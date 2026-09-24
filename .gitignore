@@ -46,3 +46,10 @@ Thumbs.db
 .idea/
 *.swp
 *~
+
+# Database dumps — full customer data and password hashes.
+/backups/
+*.sql.gz
+
+# Operational notes kept out of the published repo.
+DOCS.local.md

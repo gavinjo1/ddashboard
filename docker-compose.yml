@@ -42,8 +42,15 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       PORT: 3000
+      # One proxy in front: Caddy. Without this every request looks like it
+      # came from Caddy's address and one attacker would rate-limit everyone.
+      TRUST_PROXY: 1
+    # Bound to the loopback interface, not 0.0.0.0. Docker publishes ports by
+    # writing DNAT rules into the nat table, which are matched before ufw's
+    # INPUT chain — so a plain "3000:3000" stays reachable from the internet
+    # even when ufw says the port is denied. Caddy below is the way in.
     ports:
-      - "${PORT:-3000}:3000"
+      - "127.0.0.1:${PORT:-3000}:3000"
     init: true
     read_only: true
     security_opt:
@@ -51,5 +58,48 @@ services:
     tmpfs:
       - /tmp
 
+  # pg_dumpall of both databases on a loop, kept on the host in ./backups.
+  #
+  # This is a safety net against a bad import or a dropped table, NOT disaster
+  # recovery: the dumps sit on the same VPS as the database they came from, so
+  # copy them somewhere else — see the README.
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BACKUP_EVERY_SECONDS: ${BACKUP_EVERY_SECONDS:-86400}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./backups:/backups
+      - ./docker-backup.sh:/usr/local/bin/docker-backup.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/docker-backup.sh"]
+
+  # The only container facing the internet. With SITE_ADDRESS set to a domain
+  # that points at this VPS, Caddy obtains and renews a Let's Encrypt
+  # certificate on its own; left at the default it serves plain http on :80,
+  # which is fine on a private network and a stopgap anywhere else.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

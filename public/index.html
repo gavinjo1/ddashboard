@@ -19,12 +19,14 @@
     <button class="tab" data-tab="quality" role="tab">Quality</button>
     <button class="tab" data-tab="import" role="tab">Import</button>
     <button class="tab" data-tab="pabrik" role="tab">Pabrik</button>
+    <button class="tab" data-tab="users" role="tab" id="tabUsers" hidden>Pengguna</button>
   </nav>
   <div class="topbar-right">
     <div class="topbar-meta" id="dataRange"></div>
 
     <div class="whoami" id="whoami" hidden>
       <span class="whoami-name" id="whoamiName"></span>
+      <span class="role-chip" id="whoamiRole"></span>
       <button class="linkish" type="button" id="btnLogout">Keluar</button>
     </div>
 
@@ -319,6 +321,31 @@
       </div>
     </section>
   </div>
+</div>
+
+<!-- ------------------------------------------------------------------ -->
+<!-- Accounts. Only ever rendered for an admin; the API refuses the rest. -->
+<div class="panel" id="panel-users">
+  <section class="card">
+    <div class="card-head">
+      <h2>Pengguna</h2>
+      <p class="card-sub">Siapa yang boleh membaca, siapa yang boleh mengisi data, dan
+        siapa yang boleh mengelola akun. Perubahan berlaku seketika, tanpa perlu
+        masuk ulang.</p>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data" id="usersTable">
+        <thead>
+          <tr><th>Nama pengguna</th><th>Nama</th><th>Peran</th><th>Dibuat</th><th>Terakhir masuk</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <p class="note-line">Menghapus akun tidak menghapus jejaknya: baris yang pernah
+      diinput orang itu tetap menyimpan namanya di kolom <em>Diinput</em>.</p>
+  </section>
 </div>
 
 <!-- ------------------------------------------------------------------ -->

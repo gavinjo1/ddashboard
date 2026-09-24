@@ -1,4 +1,10 @@
 import XLSX from 'xlsx';
+import { AppError } from './errors.js';
+// SheetJS 0.20 ships the codepage tables separately and warns without them.
+// Legacy .xls and non-UTF-8 CSV carry a codepage, and the mill's loom export
+// is .xls — without this, any non-ASCII byte in it decodes wrongly.
+import * as cptable from 'xlsx/dist/cpexcel.full.mjs';
+XLSX.set_cptable(cptable);
 import { loomPool } from './loom-db.js';
 
 /* ------------------------------------------------------------------ *
@@ -102,7 +108,7 @@ export function readLoomExport(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer', raw: true, codepage: 65001 });
   const found = findDataSheet(wb);
   if (!found) {
-    throw new Error('Not a loom export: no sheet with a SORTKEY header row. '
+    throw new AppError('Not a loom export: no sheet with a SORTKEY header row. '
       + 'Expected the Shift Report from the loom monitoring system, or a CSV saved from its Data sheet.');
   }
   const { rows, headerRow } = found;
@@ -110,7 +116,7 @@ export function readLoomExport(buffer) {
   const head = rows[headerRow].map((v) => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase());
   for (const [name, i] of [['loom', COL.loom], ['run (min)', COL.run], ['stop (min)', COL.stop]]) {
     if (!head[i]?.startsWith(name.split(' ')[0])) {
-      throw new Error(`Loom export has an unexpected layout: column ${i} reads "${head[i]}", expected "${name}".`);
+      throw new AppError(`Loom export has an unexpected layout: column ${i} reads "${head[i]}", expected "${name}".`);
     }
   }
 
@@ -170,7 +176,7 @@ function toRow(rec) {
 
 export async function importLoomBuffer(buffer, fileName) {
   const { periode, rows } = readLoomExport(buffer);
-  if (!rows.length) throw new Error('Loom export parsed but held no shift rows.');
+  if (!rows.length) throw new AppError('Loom export parsed but held no shift rows.');
 
   // One row per loom per slot; a repeated key means the later line wins.
   const unique = [...new Map(rows.map((r) => [`${r.tgl}|${r.slot}|${r.loom}`, r])).values()].map(toRow);

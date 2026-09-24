@@ -786,3 +786,22 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 
 /* Shift hours change most weeks, so the pair reads as one value. */
 .data .hours { color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ *
+ * Roles
+ * ------------------------------------------------------------------ */
+.role-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-sub);
+  border: 1px solid var(--line-soft);
+  color: var(--ink-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.role-chip[data-role="admin"] { color: var(--series-1); border-color: var(--series-1); }
+
+.role-pick { padding: 3px 6px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface); }
+.row-danger { color: var(--critical); background: none; border: 0; cursor: pointer; padding: 0; }
+.row-danger:hover { text-decoration: underline; }

@@ -1,0 +1,15 @@
+# SITE_ADDRESS comes from .env.
+#
+#   dashboard.contoh.com   → Caddy gets a Let's Encrypt certificate itself
+#   :80                    → plain http, the default
+#
+# Caddy reaches the app over the compose network as app:3000. The app's own
+# 127.0.0.1:3000 in compose is not used for this — it is there so you can curl
+# it on the VPS, or reach it through an SSH tunnel while no domain exists yet.
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}

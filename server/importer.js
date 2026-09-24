@@ -1,4 +1,10 @@
 import XLSX from 'xlsx';
+import { AppError } from './errors.js';
+// SheetJS 0.20 ships the codepage tables separately and warns without them.
+// Legacy .xls and non-UTF-8 CSV carry a codepage, and the mill's loom export
+// is .xls — without this, any non-ASCII byte in it decodes wrongly.
+import * as cptable from 'xlsx/dist/cpexcel.full.mjs';
+XLSX.set_cptable(cptable);
 import path from 'node:path';
 import { pool } from './db.js';
 
@@ -175,12 +181,12 @@ const startsWith = (buf, magic) => magic.every((b, i) => buf[i] === b);
  */
 export function checkFileBytes(buffer, fileName) {
   const ext = path.extname(fileName).toLowerCase();
-  if (!buffer || !buffer.length) throw new Error('The file is empty.');
+  if (!buffer || !buffer.length) throw new AppError('The file is empty.');
 
   const binaryExt = ['.xlsx', '.xlsm', '.xlsb', '.xls', '.ods'];
   if (binaryExt.includes(ext)) {
     if (!SIGNATURES.some((s) => startsWith(buffer, s.magic))) {
-      throw new Error(`${fileName} is not a real spreadsheet — its contents do not match a ${ext} file.`);
+      throw new AppError(`${fileName} is not a real spreadsheet — its contents do not match a ${ext} file.`);
     }
     return;
   }
@@ -195,12 +201,12 @@ export function checkFileBytes(buffer, fileName) {
     { magic: [0xd0, 0xcf, 0x11, 0xe0], name: 'an Office binary' }
   ];
   const hit = forbidden.find((f) => startsWith(buffer, f.magic));
-  if (hit) throw new Error(`${fileName} is named like a text file but is ${hit.name}.`);
+  if (hit) throw new AppError(`${fileName} is named like a text file but is ${hit.name}.`);
 
   // A NUL byte early on means binary, whatever the name says.
   const head = buffer.subarray(0, 8192);
   if (head.includes(0)) {
-    throw new Error(`${fileName} is named like a text file but contains binary data.`);
+    throw new AppError(`${fileName} is named like a text file but contains binary data.`);
   }
 }
 
@@ -216,7 +222,7 @@ export function readWorkbook(buffer, fileName) {
   if (path.extname(fileName).toLowerCase() === '.json') {
     const parsed = JSON.parse(buffer.toString('utf8'));
     const arr = Array.isArray(parsed) ? parsed : (parsed.rows ?? parsed.data ?? []);
-    if (!Array.isArray(arr) || !arr.length) throw new Error('JSON file holds no array of rows');
+    if (!Array.isArray(arr) || !arr.length) throw new AppError('JSON file holds no array of rows');
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(arr), 'data');
     return wb;
@@ -818,7 +824,7 @@ export async function importBuffer(buffer, fileName, { only = null, dataset = nu
     const near = diagnose(wb, only);
     if (near) {
       const label = (f) => FIELD_LABEL[f] ?? f;
-      throw new Error(
+      throw new AppError(
         `Sheet "${near.sheet}" looks like a ${near.dataset} report but is missing ` +
         `${near.missing.map(label).join(' and ')}. ` +
         `Found: ${near.have.map(label).join(', ')}. ` +
@@ -826,7 +832,7 @@ export async function importBuffer(buffer, fileName, { only = null, dataset = nu
         `Rename the missing column, or check the heading is spelled as the importer expects.`
       );
     }
-    throw new Error(
+    throw new AppError(
       'No recognisable sheet found. A production sheet needs TGL, NO MC and PRODUKSI columns; ' +
       'a grade sheet needs TGL, MO and A.'
     );

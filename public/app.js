@@ -658,6 +658,71 @@ $('#entryForm').addEventListener('submit', async (e) => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Accounts
+ * ------------------------------------------------------------------ */
+
+const ROLES = ['viewer', 'operator', 'admin'];
+
+async function loadUsers() {
+  const { users, me: myName } = await api('admin/users');
+  $('#usersTable tbody').innerHTML = users.map((u) => {
+    const self = u.username === myName;
+    return `<tr>
+      <td>${esc(u.username)}${self ? ' <span class="muted">(Anda)</span>' : ''}</td>
+      <td class="muted">${esc(u.nama ?? '—')}</td>
+      <td><select class="role-pick" data-user="${esc(u.username)}">${
+        ROLES.map((r) => `<option value="${r}"${r === u.role ? ' selected' : ''}>${r}</option>`).join('')
+      }</select></td>
+      <td class="muted nowrap">${esc(u.created_at ?? '—')}</td>
+      <td class="muted nowrap">${esc(u.last_login ?? 'belum pernah')}</td>
+      <td>${self ? '' : `<button class="row-danger" data-del="${esc(u.username)}">hapus</button>`}</td>
+    </tr>`;
+  }).join('');
+}
+
+const usersSay = (text, bad) => {
+  const el = $('#usersTable').closest('.card').querySelector('.note-line');
+  el.textContent = text;
+  el.style.color = bad ? 'var(--critical)' : '';
+};
+
+$('#usersTable').addEventListener('change', async (e) => {
+  const pick = e.target.closest('.role-pick');
+  if (!pick) return;
+  const was = [...pick.options].find((o) => o.defaultSelected)?.value;
+  try {
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(pick.dataset.user)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: pick.value })
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error);
+    usersSay(`${pick.dataset.user} sekarang ${pick.value}.`);
+    await loadUsers();
+  } catch (err) {
+    pick.value = was;          // put the control back where it was
+    usersSay(err.message, true);
+  }
+});
+
+$('#usersTable').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-del]');
+  if (!btn) return;
+  const who = btn.dataset.del;
+  if (!confirm(`Hapus akun ${who}? Baris yang pernah diinputnya tetap menyimpan namanya.`)) return;
+  try {
+    const res = await fetch(`/api/admin/users/${encodeURIComponent(who)}`, { method: 'DELETE' });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error);
+    usersSay(`${who} dihapus.`);
+    await loadUsers();
+  } catch (err) {
+    usersSay(err.message, true);
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * Import panel
  * ------------------------------------------------------------------ */
 
@@ -1026,6 +1091,8 @@ async function refresh() {
     await loadQuality();
   } else if (state.tab === 'pabrik') {
     await loadPabrik();
+  } else if (state.tab === 'users') {
+    await loadUsers();
   } else {
     await loadImportLog();
   }
@@ -1050,11 +1117,12 @@ function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${name}`));
   // Machine-level filters mean nothing on the import screen.
-  $('#filterBar').classList.toggle('is-hidden', name === 'import' || name === 'pabrik');
+  $('#filterBar').classList.toggle('is-hidden',
+    name === 'import' || name === 'pabrik' || name === 'users');
   // The header range describes the daily report; on Pabrik it would be the
   // wrong dataset's dates, so it steps aside and the panel states its own.
-  $('#dataRange').hidden = name === 'pabrik';
-  $('#gsearch').hidden = name === 'pabrik';
+  $('#dataRange').hidden = name === 'pabrik' || name === 'users';
+  $('#gsearch').hidden = name === 'pabrik' || name === 'users';
   $$('.field[data-pick]').forEach((f) => {
     const onlyOrderFilters = name === 'quality';
     f.style.display = onlyOrderFilters && !['fabric', 'mo'].includes(f.dataset.pick) ? 'none' : '';
@@ -1132,8 +1200,23 @@ window.addEventListener('scroll', hideTip, { passive: true });
 const me = await fetch('/api/auth/me').then((r) => r.json()).catch(() => ({ user: null }));
 if (!me.user) await toLogin();
 
+const ROLE_LABEL = { viewer: 'viewer', operator: 'operator', admin: 'admin' };
+const role = me.user.role || 'viewer';
+const canWrite = role === 'operator' || role === 'admin';
+
 $('#whoamiName').textContent = me.user.nama || me.user.username;
+$('#whoamiRole').textContent = ROLE_LABEL[role] ?? role;
+$('#whoamiRole').dataset.role = role;
 $('#whoami').hidden = false;
+
+// The API refuses these anyway; hiding them keeps a viewer from filling in a
+// form that was only ever going to be rejected.
+if (!canWrite) {
+  $('#entryForm')?.closest('.card')?.remove();
+  $('#drop')?.closest('.card')?.remove();
+  $('#loomDrop')?.closest('.card')?.remove();
+}
+if (role === 'admin') $('#tabUsers').hidden = false;
 $('#btnLogout').addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
   location.replace('login.html');

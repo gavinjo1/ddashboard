@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { send } from './errors.js';
+import { requireRole } from './auth.js';
 import multer from 'multer';
 import { loomQuery } from './loom-db.js';
 import { importLoomBuffer, isLoomFile } from './loom-importer.js';
@@ -9,11 +11,6 @@ import { importLoomBuffer, isLoomFile } from './loom-importer.js';
  */
 export const loomRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 60 * 1024 * 1024 } });
-
-const send = (res, fn) => fn().catch((err) => {
-  console.error(err);
-  res.status(500).json({ error: err.message });
-});
 
 /** Date range plus the filter values, so the panel can populate itself. */
 loomRouter.get('/meta', (req, res) => send(res, async () => {
@@ -144,7 +141,7 @@ loomRouter.get('/looms', (req, res) => send(res, async () => {
   res.json(rows);
 }));
 
-loomRouter.post('/import', upload.single('file'), (req, res) => send(res, async () => {
+loomRouter.post('/import', requireRole('operator'), upload.single('file'), (req, res) => send(res, async () => {
   if (!req.file) return res.status(400).json({ error: 'No file received' });
   if (!isLoomFile(req.file.originalname)) {
     return res.status(400).json({ error: `Unsupported file type: ${req.file.originalname}` });
