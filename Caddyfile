@@ -1,12 +1,31 @@
 # SITE_ADDRESS comes from .env.
 #
 #   dashboard.contoh.com   → Caddy gets a Let's Encrypt certificate itself
+#   103.150.20.44          → the VPS's public IP, before a domain exists
 #   :80                    → plain http, the default
+#
+# The "shortlived" profile is what lets Let's Encrypt certify a bare IP: those
+# certificates last about six days and Caddy renews them on its own. It works
+# for a domain just as well, so nothing here needs changing once one exists.
+#
+# If Caddy's log shows it cannot get a certificate for the IP, replace the
+# whole tls { ... } block with the single line
+#
+#	tls internal
+#
+# and restart. Caddy then signs its own certificate: still encrypted, but each
+# browser shows "Your connection is not private" once, to be clicked through.
 #
 # Caddy reaches the app over the compose network as app:3000. The app's own
 # 127.0.0.1:3000 in compose is not used for this — it is there so you can curl
 # it on the VPS, or reach it through an SSH tunnel while no domain exists yet.
 {$SITE_ADDRESS} {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+
 	encode zstd gzip
 
 	reverse_proxy app:3000 {
