@@ -20,7 +20,9 @@ const state = {
   sort: 'produksi', dir: 'desc',
   dim: 'group',
   search: '',
-  tab: 'production'
+  tab: 'production',
+  family: 'ajl',
+  gabMonth: ''
 };
 
 function params() {
@@ -825,6 +827,142 @@ async function uploadFile(file) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Semua — the combined monthly report across every loom family
+ *
+ * The server sends the measured figures and the ratios worked out from them;
+ * this only lays them out the way the mill's GABUNGAN sheet does.
+ * ------------------------------------------------------------------ */
+
+const BULAN = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus',
+  'September', 'Oktober', 'November', 'Desember'];
+const monthName = (ym) => { const [y, m] = ym.split('-'); return `${BULAN[Number(m) - 1]} ${y}`; };
+
+// Two decimals throughout, as the sheet prints them: 52,30 and 2,82%.
+const f2 = (n) => (n === null || n === undefined || isNaN(n) ? '—'
+  : Number(n).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const p2 = (n) => (n === null || n === undefined || isNaN(n) ? '—' : `${f2(n)}%`);
+
+/** One table row in the sheet's column order. */
+const gabCells = (r) => [
+  f2(r.bs_pjg), p2(r.bs_pct), f2(r.actual_meter), p2(r.actual_pct), f2(r.prod100),
+  f2(r.pick_mesin),
+  f2(r.pm_shuttle), f2(r.pm_rapier), f2(r.pm_ajl), f2(r.pick_mesin), f2(r.pick_mc_x_prod),
+  f2(r.pi_shuttle), f2(r.pi_rapier), f2(r.pi_ajl), f2(r.pick_inspect_x_prod),
+  f2(r.pick_inspect)
+];
+const gabRow = (label, cells, cls = '') =>
+  `<tr${cls ? ` class="${cls}"` : ''}><td>${label}</td>${cells.map((c) => `<td class="num">${c}</td>`).join('')}</tr>`;
+
+/** Averages carry only the lengths; the ratios read the same as the total's. */
+const avgCells = (p) => [
+  f2(p.avg.bs_pjg), p2(p.total.bs_pct), f2(p.avg.actual_meter), p2(p.total.actual_pct),
+  f2(p.avg.prod100), f2(p.total.pick_mesin), '', '', '', '', '', '', '', '', '',
+  f2(p.total.pick_inspect)
+];
+
+async function loadGabungan() {
+  const ticket = takeTicket('gabungan');
+  const res = await fetch(`/api/gabungan?${new URLSearchParams(state.gabMonth ? { month: state.gabMonth } : {})}`);
+  if (res.status === 401) return toLogin();
+  const g = await res.json();
+  if (!isCurrent('gabungan', ticket)) return;
+
+  $('#gabEmpty').hidden = !!g.month;
+  $('#gabBody').hidden = !g.month;
+  if (!g.month) return;
+
+  state.gabMonth = g.month;
+  $('#gabMonth').innerHTML = g.months
+    .map((m) => `<option value="${m}"${m === g.month ? ' selected' : ''}>${monthName(m)}</option>`).join('');
+  $('#gabTitle').textContent = `Laporan Produksi Gabungan — ${monthName(g.month)}`;
+  const left = g.days_in_month - g.days;
+  $('#gabSub').textContent = `Shuttle · Rapier · AJL Toyota — ${g.days} dari ${g.days_in_month} hari terisi` +
+    (left > 0 ? `, sisa ${left} hari` : '');
+
+  const t = g.total;
+  const prev = g.prev;
+  const vsPrev = (now, before, unit = '') => {
+    if (!prev || before === null || before === undefined || now === null) return '';
+    const d = now - before;
+    return `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '▲' : '▼'} ${f2(Math.abs(d))}${unit}</span> vs ${BULAN[Number(prev.month.slice(5)) - 1]}`;
+  };
+  $('#gabStats').innerHTML = [
+    // Whole metres in the tiles: the decimals are in the table, and at seven
+    // digits they no longer fit a tile on a phone.
+    tile('Actual hasil kain', fmt.int(t.actual_meter), 'm',
+      `rata-rata ${fmt.int(g.avg.actual_meter)} m/hari`),
+    tile('Efisiensi', p2(t.actual_pct), '',
+      vsPrev(t.actual_pct, prev?.total.actual_pct, ' poin') || `dari ${fmt.int(t.prod100)} m produksi 100%`),
+    tile('BS', fmt.int(t.bs_pjg), 'm', `${p2(t.bs_pct)} ${vsPrev(t.bs_pct, prev?.total.bs_pct, ' poin')}`),
+    tile('Pick gabungan (mesin)', f2(t.pick_mesin), '', vsPrev(t.pick_mesin, prev?.total.pick_mesin)),
+    tile('Pick kain inspect', f2(t.pick_inspect), '', vsPrev(t.pick_inspect, prev?.total.pick_inspect))
+  ].join('');
+
+  columnChart($('#gabChart'), g.rows, {
+    x: (d) => d.tgl,
+    y: (d) => Number(d.actual_meter),
+    unit: ' m',
+    height: 230,
+    band: (d) => (d.prod100 ? [Number(d.prod100) * 0.9, Number(d.prod100)] : null),
+    labels: (d) => [fmt.int(d.actual_meter), d.actual_pct !== null ? fmt.pct(d.actual_pct) : null],
+    tipRows: (d) => [
+      ['Actual (A+B)', fmt.num(d.actual_meter) + ' m'],
+      ['Produksi 100%', fmt.num(d.prod100) + ' m'],
+      ['Efisiensi', p2(d.actual_pct)],
+      ['BS', `${fmt.num(d.bs_pjg)} m · ${p2(d.bs_pct)}`],
+      ['Pick mesin', f2(d.pick_mesin)]
+    ]
+  });
+
+  $('#gabTable tbody').innerHTML = g.rows.map((r) => gabRow(fmt.day(r.tgl), gabCells(r))).join('');
+  $('#gabTable tfoot').innerHTML = [
+    gabRow(`Total · ${g.days} hari`, gabCells(t)),
+    gabRow('Rata-rata per hari', avgCells(g)),
+    ...(prev ? [
+      gabRow(`${monthName(prev.month)} · total`, gabCells(prev.total), 'is-prev'),
+      gabRow(`${monthName(prev.month)} · rata-rata`, avgCells(prev), 'is-prev')
+    ] : [])
+  ].join('');
+}
+
+$('#gabMonth').addEventListener('change', (e) => { state.gabMonth = e.target.value; loadGabungan(); });
+
+/* ------------------------------------------------------------------ *
+ * Loom family — the picker in place of the title
+ *
+ * Semua is the combined report; AJL is the detailed daily report the rest of
+ * this dashboard is built on. Shuttle and Rapier have no daily report loaded
+ * yet, so they say so rather than showing AJL's numbers under their name.
+ * ------------------------------------------------------------------ */
+
+const FAMILY_LABEL = { semua: 'Semua', ajl: 'AJL', shuttle: 'Shuttle', rapier: 'Rapier' };
+
+function applyFamily(family) {
+  if (!FAMILY_LABEL[family]) family = 'ajl';
+  state.family = family;
+  $('#family').value = family;
+  try { localStorage.setItem('mr.family', family); } catch { /* private window */ }
+
+  $$('.tab[data-family]').forEach((t) => {
+    t.hidden = !t.dataset.family.split(' ').includes(family);
+  });
+
+  if (family === 'shuttle' || family === 'rapier') {
+    const name = FAMILY_LABEL[family];
+    $('#kosongTitle').textContent = `Belum ada data ${name}`;
+    $('#kosongSub').textContent = `Laporan harian mesin ${name} belum dimasukkan. ` +
+      'Angka gabungan semua mesin tetap bisa dilihat di Semua.';
+    return switchTab('kosong');
+  }
+  // Stay on the current tab when it belongs to this family too (Import).
+  const current = $(`.tab[data-tab="${state.tab}"]`);
+  if (current && !current.hidden) return switchTab(state.tab);
+  switchTab(family === 'semua' ? 'gabungan' : 'production');
+}
+
+$('#family').addEventListener('change', (e) => applyFamily(e.target.value));
+
+/* ------------------------------------------------------------------ *
  * Pabrik — the looms' own monitoring export
  *
  * Its own endpoints and its own database. Deliberately does not reuse the
@@ -1140,6 +1278,10 @@ async function refresh() {
     await loadPabrik();
   } else if (state.tab === 'users') {
     await loadUsers();
+  } else if (state.tab === 'gabungan') {
+    await loadGabungan();
+  } else if (state.tab === 'kosong') {
+    // Nothing to load: the panel only says there is no data yet.
   } else {
     await loadImportLog();
   }
@@ -1164,12 +1306,13 @@ function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.tab === name));
   $$('.panel').forEach((p) => p.classList.toggle('is-active', p.id === `panel-${name}`));
   // Machine-level filters mean nothing on the import screen.
-  $('#filterBar').classList.toggle('is-hidden',
-    name === 'import' || name === 'pabrik' || name === 'users');
+  // The combined report goes month by month and has its own month picker.
+  const ownData = ['pabrik', 'users', 'gabungan', 'kosong'].includes(name);
+  $('#filterBar').classList.toggle('is-hidden', name === 'import' || ownData);
   // The header range describes the daily report; on Pabrik it would be the
   // wrong dataset's dates, so it steps aside and the panel states its own.
-  $('#dataRange').hidden = name === 'pabrik' || name === 'users';
-  $('#gsearch').hidden = name === 'pabrik' || name === 'users';
+  $('#dataRange').hidden = ownData;
+  $('#gsearch').hidden = ownData;
   $$('.field[data-pick]').forEach((f) => {
     const onlyOrderFilters = name === 'quality';
     f.style.display = onlyOrderFilters && !['fabric', 'mo'].includes(f.dataset.pick) ? 'none' : '';
@@ -1274,4 +1417,6 @@ $('#btnLogout').addEventListener('click', async () => {
 });
 
 await loadFilters();
-switchTab('production');
+let savedFamily = 'ajl';
+try { savedFamily = localStorage.getItem('mr.family') || 'ajl'; } catch { /* private window */ }
+applyFamily(savedFamily);

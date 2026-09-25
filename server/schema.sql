@@ -181,3 +181,25 @@ CREATE TABLE IF NOT EXISTS import_log (
 );
 
 ALTER TABLE import_log ADD COLUMN IF NOT EXISTS imported_by text;
+
+-- The combined monthly report across every loom family ("LAPORAN PRODUKSI
+-- GABUNGAN ... SHUTTLE - RAPIER - AJL TOYOTA"), one row per day.
+--
+-- Only the figures that are measured are kept. Everything else on that sheet —
+-- BS %, efficiency %, PICK MESIN, PICK MC X PROD, PICK INSPECT PERHARI — is a
+-- ratio or a sum of these, and is recomputed by the dashboard, so the same
+-- formula serves one day, a month, or any range in between.
+CREATE TABLE IF NOT EXISTS gabungan_harian (
+  tgl           date PRIMARY KEY,
+  bs_pjg        numeric,   -- BS length, m
+  actual_meter  numeric,   -- ACTUAL HASIL KAIN GABUNGAN (A+B), m
+  prod100       numeric,   -- PRODUKSI at 100%, m
+  pm_shuttle    numeric,   -- PICK MESIN/BULAN, per family (pick × metres)
+  pm_rapier     numeric,
+  pm_ajl        numeric,
+  pi_shuttle    numeric,   -- PICK KAIN INSPECT/BULAN, per family
+  pi_rapier     numeric,
+  pi_ajl        numeric,
+  source_file   text,
+  imported_at   timestamptz NOT NULL DEFAULT now()
+);

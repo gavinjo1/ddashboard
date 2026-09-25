@@ -809,6 +809,77 @@ app.get('/api/quality', (req, res) => send(res, async () => {
 }));
 
 /* ------------------------------------------------------------------ *
+ * Semua — the combined report across every loom family
+ *
+ * Month by month, the way the mill's GABUNGAN sheet is laid out. Only the
+ * measured figures are stored; the ratios are worked out here, the same way
+ * for a day as for the month, so the total row cannot disagree with the days.
+ * ------------------------------------------------------------------ */
+
+const GAB = ['bs_pjg', 'actual_meter', 'prod100', 'pm_shuttle', 'pm_rapier', 'pm_ajl',
+  'pi_shuttle', 'pi_rapier', 'pi_ajl'];
+
+/** The sheet's derived columns, from a day's figures or a period's sums. */
+function gabDerive(s) {
+  const n = (k) => Number(s[k]) || 0;
+  const pmx = n('pm_shuttle') + n('pm_rapier') + n('pm_ajl');
+  const pix = n('pi_shuttle') + n('pi_rapier') + n('pi_ajl');
+  const actual = n('actual_meter');
+  const ratio = (a, b) => (b ? a / b : null);
+  return {
+    ...s,
+    bs_pct:          ratio(n('bs_pjg') * 100, actual + n('bs_pjg')),
+    actual_pct:      ratio(actual * 100, n('prod100')),
+    pick_mc_x_prod:  pmx,
+    pick_mesin:      ratio(pmx, actual),
+    pick_inspect_x_prod: pix,
+    pick_inspect:    ratio(pix, actual)
+  };
+}
+
+function gabPeriod(rows) {
+  const sum = Object.fromEntries(GAB.map((k) => [k, rows.reduce((t, r) => t + (Number(r[k]) || 0), 0)]));
+  const days = rows.length;
+  return {
+    days,
+    total: gabDerive(sum),
+    // Per day, as the sheet's second total line has it: the lengths divided
+    // by the days reported. The ratios are the same as the total's.
+    avg: days ? {
+      bs_pjg: sum.bs_pjg / days, actual_meter: sum.actual_meter / days, prod100: sum.prod100 / days
+    } : null
+  };
+}
+
+app.get('/api/gabungan', (req, res) => send(res, async () => {
+  const { rows: months } = await query(
+    `SELECT DISTINCT to_char(tgl, 'YYYY-MM') AS m FROM gabungan_harian ORDER BY 1 DESC`);
+  const list = months.map((r) => r.m);
+  const month = /^\d{4}-\d{2}$/.test(String(req.query.month)) && list.includes(req.query.month)
+    ? req.query.month : list[0];
+  if (!month) return res.json({ months: [], month: null, rows: [] });
+
+  const load = async (m) => (await query(
+    `SELECT tgl::text AS tgl, ${GAB.join(', ')} FROM gabungan_harian
+     WHERE to_char(tgl, 'YYYY-MM') = $1 ORDER BY tgl`, [m])).rows;
+
+  const [y, mo] = month.split('-').map(Number);
+  const prevMonth = mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`;
+  const rows = await load(month);
+  const prevRows = await load(prevMonth);
+  const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+
+  res.json({
+    months: list,
+    month,
+    days_in_month: daysInMonth,
+    rows: rows.map(gabDerive),
+    ...gabPeriod(rows),
+    prev: prevRows.length ? { month: prevMonth, ...gabPeriod(prevRows) } : null
+  });
+}));
+
+/* ------------------------------------------------------------------ *
  * Manual entry — one shift at a time, without a file
  * ------------------------------------------------------------------ */
 

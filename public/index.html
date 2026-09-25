@@ -12,13 +12,21 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark"></span>
-    <span class="brand-name">Machine Report</span>
+    <!-- Which loom family the dashboard is showing. Semua is the combined
+         monthly report; AJL is the detailed daily report. -->
+    <select class="brand-select" id="family" aria-label="Jenis mesin">
+      <option value="semua">Semua</option>
+      <option value="ajl">AJL</option>
+      <option value="shuttle">Shuttle</option>
+      <option value="rapier">Rapier</option>
+    </select>
   </div>
   <nav class="tabs" role="tablist">
-    <button class="tab is-active" data-tab="production" role="tab">Production</button>
-    <button class="tab" data-tab="quality" role="tab">Quality</button>
-    <button class="tab" data-tab="import" role="tab">Import</button>
-    <button class="tab" data-tab="pabrik" role="tab">Pabrik</button>
+    <button class="tab" data-tab="gabungan" data-family="semua" role="tab">Laporan Gabungan</button>
+    <button class="tab is-active" data-tab="production" data-family="ajl" role="tab">Production</button>
+    <button class="tab" data-tab="quality" data-family="ajl" role="tab">Quality</button>
+    <button class="tab" data-tab="import" data-family="semua ajl" role="tab">Import</button>
+    <button class="tab" data-tab="pabrik" data-family="ajl" role="tab">Pabrik</button>
     <button class="tab" data-tab="users" role="tab" id="tabUsers" hidden>Pengguna</button>
   </nav>
   <div class="topbar-right">
@@ -76,6 +84,80 @@
 
 <!-- ------------------------------------------------------------------ -->
 <main>
+
+<!-- Semua: the combined monthly report across every loom family, laid out
+     the way the mill's LAPORAN PRODUKSI GABUNGAN sheet is. -->
+<div class="panel" id="panel-gabungan">
+  <section class="card" id="gabEmpty" hidden>
+    <div class="card-head">
+      <h2>Belum ada laporan gabungan</h2>
+      <p class="card-sub">Upload file <em>LAPORAN PRODUKSI GABUNGAN</em> (Shuttle – Rapier – AJL)
+        di tab Import. Setiap bulan di file itu akan muncul di sini.</p>
+    </div>
+  </section>
+
+  <div id="gabBody">
+    <section class="card gab-head">
+      <div class="card-head card-head-row">
+        <div>
+          <h2 id="gabTitle">Laporan Produksi Gabungan</h2>
+          <p class="card-sub" id="gabSub">Shuttle · Rapier · AJL Toyota</p>
+        </div>
+        <label class="field gab-month"><span>Bulan</span><select id="gabMonth"></select></label>
+      </div>
+      <div class="stats" id="gabStats"></div>
+    </section>
+
+    <figure class="card">
+      <figcaption class="card-head">
+        <h2>Hasil kain per hari</h2>
+        <p class="card-sub">Actual hasil kain gabungan (A+B). Area oranye: 90–100% dari produksi 100%.</p>
+      </figcaption>
+      <div class="chart" id="gabChart"></div>
+    </figure>
+
+    <section class="card">
+      <div class="card-head"><h2>Rincian harian</h2></div>
+      <div class="table-wrap">
+        <table class="data gab-table" id="gabTable">
+          <thead>
+            <tr>
+              <th rowspan="2">Tgl</th>
+              <th colspan="2" class="grp">BS</th>
+              <th colspan="2" class="grp">Actual hasil kain (A+B)</th>
+              <th class="grp">Produksi</th>
+              <th rowspan="2" class="num">Pick mesin</th>
+              <th colspan="5" class="grp">Pick mesin / bulan</th>
+              <th colspan="4" class="grp">Pick kain inspect / bulan</th>
+              <th rowspan="2" class="num">Pick inspect per hari</th>
+            </tr>
+            <tr>
+              <th class="num">Pjg</th><th class="num">%</th>
+              <th class="num">Meter</th><th class="num">%</th>
+              <th class="num">100%</th>
+              <th class="num">Shuttle</th><th class="num">Rapier</th><th class="num">AJL</th>
+              <th class="num">Pick MC</th><th class="num">Pick MC × prod</th>
+              <th class="num">Shuttle</th><th class="num">Rapier</th><th class="num">AJL 1+2+3+4</th>
+              <th class="num">Pick inspect × prod</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+          <tfoot></tfoot>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- Shuttle and Rapier: no daily report is loaded for them yet. -->
+<div class="panel" id="panel-kosong">
+  <section class="card">
+    <div class="card-head">
+      <h2 id="kosongTitle">Belum ada data</h2>
+      <p class="card-sub" id="kosongSub"></p>
+    </div>
+  </section>
+</div>
 
 <div class="panel is-active" id="panel-production">
   <div class="stats" id="stats"></div>

@@ -74,6 +74,21 @@ button, input, select { font: inherit; color: inherit; }
   background: var(--series-1);
 }
 .brand-name { font-weight: 600; letter-spacing: -.01em; }
+/* The family picker stands where the name was, so it reads as the title. */
+.brand-select {
+  height: 30px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  cursor: pointer;
+}
+.brand-select:hover { border-color: var(--line); }
+.brand-select:focus-visible { outline: 2px solid var(--series-1); outline-offset: -1px; }
 
 .tabs { display: flex; gap: 2px; }
 .tab {
@@ -357,6 +372,11 @@ main { padding: 16px 20px 40px; }
     padding: 10px 16px;
   }
   .topbar-right { margin-left: 0; flex-basis: 100%; flex-direction: column-reverse; align-items: stretch; gap: 8px; }
+  /* An admin's five tabs are wider than a phone: they scroll inside their own
+     row instead of pushing the whole page sideways. */
+  .tabs { flex-basis: 100%; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: none; white-space: nowrap; }
   .topbar-meta { white-space: normal; }
   /* Stacked, the name and Keluar would sit on top of each other; side by side
      they stay one line and the button keeps a reachable tap target. */
@@ -805,3 +825,32 @@ th.is-sorted-desc::after { content: " ↓"; width: auto; }
 .role-pick { padding: 3px 6px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface); }
 .row-danger { color: var(--critical); background: none; border: 0; cursor: pointer; padding: 0; }
 .row-danger:hover { text-decoration: underline; }
+
+/* ------------------------------------------------------------------ *
+ * Semua — the combined report
+ * ------------------------------------------------------------------ */
+.gab-month select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.gab-head .stats { margin-top: 4px; }
+
+/* Two header rows, so neither can be sticky: the second would slide under
+   the first. The groups get a rule under them, as on the sheet. */
+table.gab-table th { position: static; }
+table.gab-table th.grp { text-align: center; border-bottom: 1px solid var(--line-soft); }
+table.gab-table thead tr:first-child th[rowspan] { vertical-align: bottom; }
+table.gab-table tfoot td {
+  padding: 7px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-sub);
+  font-weight: 600;
+  white-space: nowrap;
+}
+table.gab-table tfoot tr.is-prev td { font-weight: 400; color: var(--ink-2); }
+table.gab-table tfoot tr.is-prev:first-of-type td,
+table.gab-table tfoot tr.is-prev + tr:not(.is-prev) td { border-top-width: 2px; }
+table.gab-table td { white-space: nowrap; }
