@@ -44,13 +44,19 @@ services:
       PORT: 3000
       # One proxy in front: Caddy. Without this every request looks like it
       # came from Caddy's address and one attacker would rate-limit everyone.
-      TRUST_PROXY: 1
-    # Bound to the loopback interface, not 0.0.0.0. Docker publishes ports by
-    # writing DNAT rules into the nat table, which are matched before ufw's
-    # INPUT chain — so a plain "3000:3000" stays reachable from the internet
-    # even when ufw says the port is denied. Caddy below is the way in.
+      # Set to 0 when APP_BIND opens the app directly: with no proxy in front,
+      # trusting X-Forwarded-For would let anyone forge their address.
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+    # Bound to the loopback interface by default, not 0.0.0.0. Docker publishes
+    # ports by writing DNAT rules into the nat table, which are matched before
+    # ufw's INPUT chain — so a plain "3000:3000" stays reachable from the
+    # internet even when ufw says the port is denied. Caddy below is the way in.
+    #
+    # APP_BIND=0.0.0.0 opens http://<ip>:3000 to everyone instead, for testing
+    # while Caddy cannot get a certificate. That is plain http: passwords cross
+    # the internet unencrypted.
     ports:
-      - "127.0.0.1:${PORT:-3000}:3000"
+      - "${APP_BIND:-127.0.0.1}:${PORT:-3000}:3000"
     init: true
     read_only: true
     security_opt:
