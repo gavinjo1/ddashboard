@@ -78,34 +78,41 @@ const OPEN = new Set(['/api/auth/login', '/api/auth/register', '/api/auth/me', '
  * Guards the API only. Registered globally so it sits ahead of every route,
  * including the loom router mounted later; the static files fall through, and
  * the page itself sends anyone without a session to the sign-in screen.
+ *
+ * The cookie alone only proves who someone was when they signed in, so the
+ * account is looked up on every request: deleting it, or changing its role,
+ * takes effect on that person's next click rather than when the cookie runs
+ * out twelve hours later.
  */
-export function requireLogin(req, res, next) {
+export async function requireLogin(req, res, next) {
   const path = req.path;
   if (!path.startsWith('/api') || OPEN.has(path)) return next();
 
   const user = readSession(req);
   if (!user) return res.status(401).json({ error: 'Belum masuk.' });
-  req.user = user;
-  next();
+  try {
+    const { rows: [u] } = await query('SELECT role FROM app_user WHERE username = $1', [user]);
+    if (!u) {
+      clearSession(res);
+      return res.status(401).json({ error: 'Belum masuk.' });
+    }
+    req.user = user;
+    req.role = u.role;
+    next();
+  } catch (err) { next(err); }
 }
 
 /* ---- roles ---- */
 
 const RANK = { viewer: 1, operator: 2, admin: 3 };
 
-/** Looks the role up per request, so a change takes effect without re-login. */
+/** Reads the role requireLogin looked up for this same request. */
 export function requireRole(min) {
-  return async (req, res, next) => {
-    try {
-      const { rows: [u] } = await query(
-        'SELECT role FROM app_user WHERE username = $1', [req.user]);
-      if (!u) return res.status(401).json({ error: 'Belum masuk.' });
-      if ((RANK[u.role] ?? 0) < RANK[min]) {
-        return res.status(403).json({ error: 'Akun Anda tidak punya hak untuk tindakan ini.' });
-      }
-      req.role = u.role;
-      next();
-    } catch (err) { next(err); }
+  return (req, res, next) => {
+    if ((RANK[req.role] ?? 0) < RANK[min]) {
+      return res.status(403).json({ error: 'Akun Anda tidak punya hak untuk tindakan ini.' });
+    }
+    next();
   };
 }
 

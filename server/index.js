@@ -96,39 +96,56 @@ app.get('/api/auth/captcha',
     res.json(c);
   });
 
+/** The rules every new account is held to, however it is created. */
+function newAccount(body) {
+  const username = String(body?.username ?? '').trim().toLowerCase();
+  const nama = String(body?.nama ?? '').trim() || null;
+  const password = String(body?.password ?? '');
+  if (!USERNAME.test(username)) {
+    throw new AppError('Nama pengguna 3–32 karakter: huruf, angka, titik, garis.');
+  }
+  if (password.length < 8) throw new AppError('Kata sandi minimal 8 karakter.');
+  return { username, nama, password };
+}
+
+/**
+ * Only for the very first account, which becomes the admin. After that the
+ * data is the mill's customer book, so nobody signs themselves up: the admin
+ * creates each account from the Pengguna tab.
+ */
 app.post('/api/auth/register',
-  // Open registration plus a public address is an invitation to script account
-  // creation; this makes it tedious without getting in a real person's way.
   limit({ windowMs: 60 * 60 * 1000, max: 5, prefix: 'register',
           message: 'Terlalu banyak pendaftaran dari jaringan ini. Coba lagi nanti.' }),
   (req, res) => send(res, async () => {
-  const username = String(req.body?.username ?? '').trim().toLowerCase();
-  const nama = String(req.body?.nama ?? '').trim();
-  const password = String(req.body?.password ?? '');
-
-  if (!USERNAME.test(username)) {
-    return res.status(400).json({ error: 'Nama pengguna 3–32 karakter: huruf, angka, titik, garis.' });
-  }
-  if (password.length < 8) {
-    return res.status(400).json({ error: 'Kata sandi minimal 8 karakter.' });
-  }
-
+  const { username, nama, password } = newAccount(req.body);
   const { salt, hash } = await hashPassword(password);
+
+  // The table is locked for the check and the insert together, so two people
+  // opening a fresh install at the same moment cannot both come out admin.
+  const client = await pool.connect();
+  let created;
   try {
-    // Decided inside the statement rather than by a prior count, so two
-    // people registering at the same moment cannot both come out admin.
-    await query(
+    await client.query('BEGIN');
+    await client.query('LOCK TABLE app_user IN EXCLUSIVE MODE');
+    const { rowCount } = await client.query(
       `INSERT INTO app_user (username, nama, pass_hash, pass_salt, role)
-       VALUES ($1,$2,$3,$4,
-         CASE WHEN NOT EXISTS (SELECT 1 FROM app_user) THEN 'admin' ELSE 'viewer' END)`,
-      [username, nama || null, hash, salt]);
+       SELECT $1, $2, $3, $4, 'admin'
+       WHERE NOT EXISTS (SELECT 1 FROM app_user)`,
+      [username, nama, hash, salt]);
+    await client.query('COMMIT');
+    created = rowCount === 1;
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Nama pengguna sudah dipakai.' });
+    await client.query('ROLLBACK').catch(() => {});
     throw err;
+  } finally {
+    client.release();
   }
-  const { rows: [me] } = await query('SELECT role FROM app_user WHERE username = $1', [username]);
+
+  if (!created) {
+    return res.status(403).json({ error: 'Pendaftaran ditutup. Minta akun ke admin.' });
+  }
   setSession(res, username);
-  res.json({ user: { username, nama: nama || null, role: me.role } });
+  res.json({ user: { username, nama, role: 'admin' } });
 }));
 
 app.post('/api/auth/login', (req, res) => send(res, async () => {
@@ -210,6 +227,24 @@ app.get('/api/admin/users', requireRole('admin'), (req, res) => send(res, async 
   res.json({ users: rows, me: req.user });
 }));
 
+app.post('/api/admin/users', requireRole('admin'), (req, res) => send(res, async () => {
+  const { username, nama, password } = newAccount(req.body);
+  const role = String(req.body?.role ?? 'viewer');
+  if (!ROLES.includes(role)) throw new AppError('Peran tidak dikenal.');
+
+  const { salt, hash } = await hashPassword(password);
+  try {
+    await query(
+      `INSERT INTO app_user (username, nama, pass_hash, pass_salt, role)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [username, nama, hash, salt, role]);
+  } catch (err) {
+    if (err.code === '23505') throw new AppError('Nama pengguna sudah dipakai.', 409);
+    throw err;
+  }
+  res.json({ username, nama, role });
+}));
+
 app.patch('/api/admin/users/:username', requireRole('admin'), (req, res) => send(res, async () => {
   const target = String(req.params.username).toLowerCase();
   const role = String(req.body?.role ?? '');
@@ -255,7 +290,8 @@ app.post('/api/admin/users/:username/password', requireRole('admin'), (req, res)
   if (!rowCount) throw new AppError('Akun tidak ditemukan.', 404);
 
   // The old session stays valid: the cookie is signed, not derived from the
-  // password. Deleting the account is the way to cut someone off immediately.
+  // password. Deleting the account is the way to cut someone off — requireLogin
+  // looks the account up on every request, so that takes effect at once.
   res.json({ username: target, reset: true });
 }));
 
@@ -982,7 +1018,7 @@ async function exportRows(q) {
   return rows;
 }
 
-app.get('/api/export.xlsx', (req, res) => send(res, async () => {
+app.get('/api/export.xlsx', requireRole('operator'), (req, res) => send(res, async () => {
   const rows = await exportRows(req.query);
   const sheet = XLSX.utils.aoa_to_sheet([SOURCE_HEADERS, ...rows.map(sourceRow)]);
 
@@ -1016,7 +1052,7 @@ app.get('/api/export.xlsx', (req, res) => send(res, async () => {
  * CSV export of the current view
  * ------------------------------------------------------------------ */
 
-app.get('/api/export.csv', (req, res) => send(res, async () => {
+app.get('/api/export.csv', requireRole('operator'), (req, res) => send(res, async () => {
   // Aliased and fully qualified: order_info also has mo and kode_kain, so a
   // bare column name here is ambiguous once it is joined in.
   const { clauses, params } = buildFilters(req.query, { prefix: 'p.' });

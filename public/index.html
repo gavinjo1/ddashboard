@@ -328,6 +328,40 @@
 <div class="panel" id="panel-users">
   <section class="card">
     <div class="card-head">
+      <h2>Buat akun</h2>
+      <p class="card-sub">Tidak ada pendaftaran sendiri: setiap akun dibuat di sini. Berikan
+        nama pengguna dan kata sandinya langsung ke orangnya. <em>Viewer</em> hanya
+        membaca; <em>operator</em> juga mengisi data dan mengekspor; <em>admin</em>
+        juga mengelola akun.</p>
+    </div>
+
+    <form class="entry" id="newUserForm" autocomplete="off">
+      <label class="field"><span>Nama pengguna</span>
+        <input id="nuUser" required pattern="[A-Za-z0-9._-]{3,32}" placeholder="mis. budi.s"
+               autocomplete="off"></label>
+      <label class="field"><span>Nama lengkap</span>
+        <input id="nuNama" placeholder="opsional" autocomplete="off"></label>
+      <label class="field"><span>Kata sandi</span>
+        <input id="nuPass" required minlength="8" placeholder="minimal 8 karakter"
+               autocomplete="new-password"></label>
+      <label class="field"><span>Peran</span>
+        <select id="nuRole">
+          <option value="viewer">viewer</option>
+          <option value="operator">operator</option>
+          <option value="admin">admin</option>
+        </select></label>
+      <div class="entry-actions">
+        <button class="btn btn-primary" type="submit" id="nuSave">Buat akun</button>
+        <button class="btn btn-quiet" type="button" id="nuGen"
+                title="Isi kata sandi acak yang kuat">Sandi acak</button>
+      </div>
+    </form>
+
+    <p class="note-line" id="nuMsg"></p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
       <h2>Pengguna</h2>
       <p class="card-sub">Siapa yang boleh membaca, siapa yang boleh mengisi data, dan
         siapa yang boleh mengelola akun. Perubahan berlaku seketika, tanpa perlu

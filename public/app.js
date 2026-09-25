@@ -541,6 +541,10 @@ function setEntryHours(start, end) {
 }
 
 function fillLists(f) {
+  // A viewer has no entry form — it is removed at sign-in — and throwing here
+  // would stop the whole dashboard from loading for them.
+  if (!$('#entryForm')) return;
+
   // Rebuilt with the rest of the reference data so it cannot drift from the
   // windows the filter uses.
   const keep = $('#eJamSlot').value;
@@ -719,6 +723,48 @@ $('#usersTable').addEventListener('click', async (e) => {
     await loadUsers();
   } catch (err) {
     usersSay(err.message, true);
+  }
+});
+
+/* ---- creating an account ---- */
+
+const nuSay = (text, bad) => {
+  const el = $('#nuMsg');
+  el.textContent = text;
+  el.style.color = bad ? 'var(--critical)' : '';
+};
+
+// No 0/O or 1/l/I: the password is read out or copied by hand to the person.
+$('#nuGen').addEventListener('click', () => {
+  const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const pick = crypto.getRandomValues(new Uint32Array(12));
+  $('#nuPass').value = [...pick].map((n) => chars[n % chars.length]).join('');
+});
+
+$('#newUserForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#nuSave').disabled = true;
+  try {
+    const res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: $('#nuUser').value,
+        nama: $('#nuNama').value,
+        password: $('#nuPass').value,
+        role: $('#nuRole').value
+      })
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error);
+    // Shown once, so the admin can pass it on; it is not stored anywhere readable.
+    nuSay(`Akun ${d.username} (${d.role}) dibuat. Kata sandinya: ${$('#nuPass').value}`);
+    $('#newUserForm').reset();
+    await loadUsers();
+  } catch (err) {
+    nuSay(err.message, true);
+  } finally {
+    $('#nuSave').disabled = false;
   }
 });
 
@@ -1082,8 +1128,9 @@ async function loadFilters() {
 }
 
 async function refresh() {
-  $('#btnExport').href = `/api/export.csv?${params()}`;
-  $('#btnExportXlsx').href = `/api/export.xlsx?${params()}`;
+  // Absent for a viewer: the buttons are removed at sign-in.
+  if ($('#btnExport')) $('#btnExport').href = `/api/export.csv?${params()}`;
+  if ($('#btnExportXlsx')) $('#btnExportXlsx').href = `/api/export.xlsx?${params()}`;
   syncFilterSummary();
   if (state.tab === 'production') {
     await Promise.all([loadSummary(), loadCharts(), loadMachines(), loadOrderInfo()]);
@@ -1215,6 +1262,10 @@ if (!canWrite) {
   $('#entryForm')?.closest('.card')?.remove();
   $('#drop')?.closest('.card')?.remove();
   $('#loomDrop')?.closest('.card')?.remove();
+  // The export carries every customer and order in one file, so it is for
+  // the people who work with the data, not everyone who can look at it.
+  $('#btnExport')?.remove();
+  $('#btnExportXlsx')?.remove();
 }
 if (role === 'admin') $('#tabUsers').hidden = false;
 $('#btnLogout').addEventListener('click', async () => {

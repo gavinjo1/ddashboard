@@ -67,7 +67,7 @@
 
     <div class="auth-switch" role="tablist">
       <button type="button" class="is-active" id="tabLogin" role="tab">Masuk</button>
-      <button type="button" id="tabRegister" role="tab">Daftar</button>
+      <button type="button" id="tabRegister" role="tab" hidden>Daftar</button>
     </div>
 
     <form id="authForm" autocomplete="on">
@@ -146,9 +146,14 @@ try {
   const me = await fetch('/api/auth/me').then((r) => r.json());
   if (me.user) location.replace('/');
   else if (me.captcha_required) await loadCaptcha();
+  // Accounts are handed out by the admin, so the register form exists only
+  // for the very first one, on a fresh install.
   if (!me.user && me.first_run) {
+    $('tabRegister').hidden = false;
     setMode('register');
-    $('aHint').textContent = 'Belum ada akun. Akun pertama yang dibuat akan jadi pemakai pertama.';
+    $('aHint').textContent = 'Belum ada akun. Akun pertama yang dibuat menjadi admin.';
+  } else {
+    $('aHint').textContent = 'Belum punya akun? Minta ke admin.';
   }
 } catch { /* offline: let them try anyway */ }
 
